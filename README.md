@@ -1,63 +1,201 @@
-# Introduction
+# VoxelNet
 
-This is an unofficial implementation of [VoxelNet: End-to-End Learning for Point Cloud Based 3D Object Detection](https://arxiv.org/abs/1711.06396) in pytorch. A large part of this project is based on the work [here](https://github.com/jeasinema/VoxelNet-tensorflow)
-# Dependencies
-- `python3.5+`
-- `pytorch` (tested on 0.3.1)
-- `opencv`
-- `shapely`
-- `mayavi`
+PyTorch implementation of [VoxelNet: End-to-End Learning for Point Cloud Based 3D Object Detection](https://arxiv.org/abs/1711.06396), updated for PyTorch 2.x.
 
-# Installation
-1. Clone this repository.
-2. Compile the Cython module for box_overlaps
+The original version of this repo (PyTorch 0.3, Python 3.5, custom C/CUDA extensions) was based on [jeasinema/VoxelNet-tensorflow](https://github.com/jeasinema/VoxelNet-tensorflow). This version is a rewrite with the same package layout as [scnn_torch](https://github.com/Chris7462/scnn_torch), pure PyTorch/NumPy (no compiled extensions), and several correctness fixes.
+
+## Changes from the Original Implementation
+
+| Area | Original | This Implementation |
+|------|----------|---------------------|
+| **NMS** | Custom C/CUDA extension via `torch.utils.ffi` (removed in PyTorch 1.0) | `torchvision.ops.nms` |
+| **IoU** | Cython `box_overlaps` using the pixel "+1" convention on metric boxes (a 1.6 m × 3.9 m anchor was treated as 2.6 m × 4.9 m) | Vectorized NumPy IoU, no "+1" |
+| **Voxelization** | Python loop over voxels, O(voxels × points) (~1.5 s/frame) | Vectorized sort-based grouping (~20 ms/frame), identical output |
+| **Label loading** | Camera → LiDAR transform ignored `R0_rect` (≈0.4 m error at 40 m) | Uses `R0_rect · Tr_velo_to_cam` |
+| **Anchor z** | Anchor center height −1.0 m compared directly with GT *bottom* height | Anchor bottom = −1.0 − h/2, consistent with GT |
+| **Yaw target** | θ_gt − θ_anchor, so a box and its π-flipped twin give conflicting targets | Residual wrapped to [−π/2, π/2) |
+| **Anchor matching** | An anchor matching several GTs regressed the first one; frames without GT crashed | Regresses its highest-IoU GT; empty frames are all-negative |
+| **VFE** | Padded points entered BatchNorm statistics and the max-pooling | Point-wise layers run on valid points only |
+| **RPN block 3** | 5 plain `Conv2d` without BN/ReLU | Conv → BN → ReLU, as in the paper |
+| **RPN deconvs** | Deconv → BN | Deconv → BN → ReLU |
+| **Per-object augmentation** | Rotation around the LiDAR origin (a car at 40 m could move ~12 m); axis-aligned point selection | Rotation around the box center; points selected inside the rotated box |
+| **Batch size** | Hard-coded; last partial batch crashed; `.cuda()` everywhere | Taken from the batch; device-agnostic |
+| **Training** | Fixed 10k iterations, no checkpoints, image dump every iteration | Iteration-based trainer with validation, checkpoints, resume, bfloat16 AMP |
+| **Config** | Python class | YAML |
+
+Visualization (mayavi / image overlays) and KITTI AP evaluation are not included yet.
+
+## Installation
+
+Requires Python ≥ 3.10 and PyTorch ≥ 2.4 (developed with PyTorch 2.13 + CUDA 13.0).
 ```bash
-$ python3 setup.py build_ext --inplace
+cd VoxelNet-pytorch
+pip install -e .
 ```
-3. Compile the nms model
+
+For running the tests:
 ```bash
-$ python3 nms/build.py
+pip install -e .[dev]
+pytest
 ```
 
+## Dataset
 
-# Data Preparation
-1. Download the 3D KITTI detection dataset from [here](http://www.cvlibs.net/datasets/kitti/eval_object.php?obj_benchmark=3d). Data to download include:
-    * Velodyne point clouds (29 GB): input data to VoxelNet
-    * Training labels of object data set (5 MB): input label to VoxelNet
-    * Camera calibration matrices of object data set (16 MB): for visualization of predictions
-    * Left color images of object data set (12 GB): for visualization of predictions
+Download the [KITTI 3D object detection dataset](http://www.cvlibs.net/datasets/kitti/eval_object.php?obj_benchmark=3d):
+- Velodyne point clouds (29 GB)
+- Training labels (5 MB)
+- Camera calibration matrices (16 MB)
+- Left color images (12 GB), used to crop the point clouds to the camera field of view
 
-2. In this project, the cropped point cloud data for training and validation. Point clouds outside the image coordinates are removed.
+Create a symlink:
 ```bash
-$ python3 data/crop.py
-```
-3. Split the training set into training and validation set according to the protocol [here](https://xiaozhichen.github.io/files/mv3d/imagesets.tar.gz).
-```plain
-└── DATA_DIR
-       ├── training   <-- training data
-       |   ├── image_2
-       |   ├── label_2
-       |   ├── velodyne
-       |   └── crop
-       └── testing  <--- testing data
-       |   ├── image_2
-       |   ├── label_2
-       |   ├── velodyne
-       |   └── crop
+mkdir -p data
+ln -s /path/to/KITTI data/KITTI
 ```
 
-# Train
+Crop the point clouds to the left camera's field of view (writes `training/crop/` and `testing/crop/`):
+```bash
+python tools/crop_kitti.py --root data/KITTI
+```
 
+Put the train/val split of [Chen et al. (MV3D)](https://xiaozhichen.github.io/files/mv3d/imagesets.tar.gz) (3712 / 3769 frames) in `ImageSets/`.
 
+Expected structure:
+```
+data/KITTI/
+├── ImageSets/
+│   ├── train.txt
+│   └── val.txt
+├── training/
+│   ├── calib/
+│   ├── crop/          # generated by tools/crop_kitti.py
+│   ├── image_2/
+│   ├── label_2/
+│   └── velodyne/
+└── testing/
+    ├── calib/
+    ├── crop/
+    ├── image_2/
+    └── velodyne/
+```
 
+## Training
+```bash
+python tools/train.py --config configs/voxelnet_kitti_car.yaml
+```
 
-# TODO
-- [x] training code
-- [x] data augmentation
-- [ ] validation code
-- [ ] reproduce results for `Car`, `Pedestrian` and `Cyclist`
-- [ ] multi-gpu support
-- [ ] improve the performances
+Resume from checkpoint:
+```bash
+python tools/train.py --config configs/voxelnet_kitti_car.yaml --resume checkpoints/latest.pth
+```
 
+Training outputs (in `checkpoints/`, configurable):
+- `latest.pth` and `best.pth` (lowest validation loss)
+- `history.json` with train / validation losses at every checkpoint
 
+### Training Configuration
 
+Key settings in `configs/voxelnet_kitti_car.yaml`:
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `dataset.point_cloud_range` | [0, −40, −3, 70.4, 40, 1] | Detection range in the LiDAR frame (m) |
+| `dataset.voxel_size` | [0.2, 0.2, 0.4] | Voxel size → grid (352, 400, 10) |
+| `dataset.max_points_per_voxel` | 35 | T in the paper |
+| `anchor.pos_iou` / `neg_iou` | 0.6 / 0.45 | BEV IoU thresholds for anchor matching |
+| `dataloader.batch_size` | 2 | Batch size |
+| `train.max_iter` | 297000 | ~160 epochs at batch size 2 |
+| `train.amp` | true | bfloat16 autocast on CUDA |
+| `optimizer.lr` | 0.01 | SGD learning rate |
+| `lr_scheduler.milestones` | [278400] | lr × 0.1 after ~150 epochs |
+| `loss.alpha` / `loss.beta` | 1.5 / 1.0 | Positive / negative classification weights |
+| `checkpoint.interval` | 2000 | Validate and save checkpoint every N iterations |
+
+The dense voxel tensor is about 0.7 GB per sample in float32 (half that with bfloat16 AMP).
+
+## Model Architecture
+
+```
+Points (P, 4)
+    │  Voxelizer (data pipeline): group into voxels, ≤ T = 35 points each
+    ▼
+Voxels (V, 35, 7), num_points (V,), coords (V, 4)
+    │
+    ▼
+SVFE ──────────────────── (V, 128)
+    │                     VFE(7→32) → VFE(32→128) → FCN(128→128) → max over points
+    ▼
+Scatter ───────────────── (B, 128, 10, 400, 352)
+    │
+    ▼
+Conv Middle Layers ────── (B, 128, 400, 352)
+    │                     3 × Conv3d → BN → ReLU, depth 10 → 2 merged into channels
+    ▼
+RPN Backbone ──────────── strides 2 / 4 / 8
+    │                     Block 1: 4 convs, Block 2: 6 convs, Block 3: 6 convs
+    ▼
+RPN Neck ──────────────── (B, 768, 200, 176)
+    │                     Deconv ×4 / ×2 / ×1 → BN → ReLU → concat
+    │
+    ├──────────────────────────────────┐
+    ▼                                  ▼
+Score Head (1×1 conv)             Regression Head (1×1 conv)
+    ▼                                  ▼
+psm (B, 2, 200, 176)              rm (B, 14, 200, 176)
+```
+
+Boxes are `[x, y, z, h, w, l, yaw]` in the LiDAR frame with `z` the bottom-center height. `voxelnet_torch.utils.postprocess` decodes the outputs and applies NMS on bird's-eye-view boxes.
+
+## Project Structure
+```
+├── pyproject.toml              # Package configuration
+├── configs/
+│   └── voxelnet_kitti_car.yaml # KITTI Car training config
+├── voxelnet_torch/             # Python package
+│   ├── datasets/
+│   │   ├── kitti.py            # KITTI dataset + collate
+│   │   ├── kitti_io.py         # Calibration / label / point cloud readers
+│   │   ├── voxelizer.py        # Vectorized voxelization
+│   │   ├── target_assigner.py  # Anchor matching + box encoding
+│   │   └── augmentation.py     # Per-object / global rotation / global scaling
+│   ├── model/
+│   │   ├── voxel_encoder/      # VFE, SVFE
+│   │   ├── middle/             # 3D convolutional middle layers
+│   │   ├── backbone/           # RPN conv blocks
+│   │   ├── neck/               # RPN deconvs + concat
+│   │   ├── head/               # Score and regression heads
+│   │   ├── loss/               # VoxelNet loss
+│   │   └── net/                # Full network
+│   ├── engine/
+│   │   └── trainer.py          # Training loop, validation, checkpoints
+│   └── utils/
+│       ├── anchors.py          # Anchor generation
+│       ├── box_ops.py          # Box conversions, IoU, encode / decode
+│       ├── postprocessing.py   # Decoding + NMS
+│       ├── config.py           # Config loading, grid size
+│       ├── data.py             # Infinite loader
+│       ├── logger.py           # History tracking
+│       ├── metrics.py          # Running loss averages
+│       └── seed.py             # Reproducibility
+├── tools/
+│   ├── train.py                # Training script
+│   └── crop_kitti.py           # Crop point clouds to the camera FOV
+└── tests/                      # pytest suite (synthetic KITTI data, CPU)
+```
+
+## TODO
+- [x] Port to PyTorch 2.x
+- [x] Fix IoU, calibration, anchor, and architecture issues
+- [ ] Visualization (BEV, image projection)
+- [ ] KITTI evaluation (BEV / 3D AP)
+- [ ] Reproduce results for `Car`, `Pedestrian` and `Cyclist`
+
+## Reference
+```bibtex
+@inproceedings{zhou2018voxelnet,
+  title={VoxelNet: End-to-End Learning for Point Cloud Based 3D Object Detection},
+  author={Zhou, Yin and Tuzel, Oncel},
+  booktitle={CVPR},
+  year={2018}
+}
+```

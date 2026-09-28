@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voxelnet_torch"
+version = "0.2.0"
+description = "VoxelNet 3D object detection in PyTorch"
+readme = "README.md"
+license = "MIT"
+authors = [
+    {name = "chris7462", email = "chris7462@gmail.com"}
+]
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.4",
+    "torchvision",
+    "numpy",
+    "opencv-python",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+include = ["voxelnet_torch*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
