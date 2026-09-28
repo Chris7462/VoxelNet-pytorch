@@ -46,8 +46,13 @@ class Trainer:
         self.checkpoint_interval = config['checkpoint']['interval']
         self.print_interval = config['logging']['print_interval']
 
-        # bfloat16 autocast (no GradScaler needed); CUDA only
+        # Mixed precision (CUDA only): bfloat16 where the GPU supports it natively (Ampere+),
+        # otherwise float16 with a GradScaler (e.g. Turing / RTX 20xx)
         self.use_amp = bool(config['train'].get('amp', False)) and self.device.type == 'cuda'
+        self.amp_dtype = self._resolve_amp_dtype(config['train'].get('amp_dtype', 'auto'))
+        self.scaler = torch.amp.GradScaler(
+            'cuda', enabled=self.use_amp and self.amp_dtype == torch.float16
+        )
 
         # Checkpoint settings
         self.save_dir = Path(config['checkpoint']['save_dir'])
@@ -61,6 +66,17 @@ class Trainer:
         self.start_iter = 0
         self.best_val_loss = float('inf')
 
+    def _resolve_amp_dtype(self, amp_dtype: str) -> torch.dtype:
+        """Pick the autocast dtype: 'bfloat16', 'float16', or 'auto'."""
+        if not self.use_amp:
+            return torch.float32
+        if amp_dtype == 'auto':
+            native_bf16 = torch.cuda.is_bf16_supported(including_emulation=False)
+            return torch.bfloat16 if native_bf16 else torch.float16
+        if amp_dtype not in ('bfloat16', 'float16'):
+            raise ValueError(f"amp_dtype must be 'auto', 'bfloat16' or 'float16', got {amp_dtype!r}")
+        return getattr(torch, amp_dtype)
+
     def _to_device(self, sample: dict) -> dict:
         """Move the tensors of a collated batch to the training device."""
         keys = ('voxels', 'num_points', 'coords', 'pos_equal_one', 'neg_equal_one', 'targets')
@@ -70,7 +86,7 @@ class Trainer:
         """Forward pass and loss for one batch."""
         batch = self._to_device(sample)
 
-        with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16, enabled=self.use_amp):
+        with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype, enabled=self.use_amp):
             psm, rm = self.model(batch['voxels'], batch['num_points'], batch['coords'], sample['batch_size'])
 
         loss, loss_cls, loss_reg = self.criterion(
@@ -93,8 +109,9 @@ class Trainer:
             loss, loss_cls, loss_reg, num_pos = self._step(sample)
 
             # Backward pass
-            loss.backward()
-            self.optimizer.step()
+            self.scaler.scale(loss).backward()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
             self.lr_scheduler.step()
 
             # Update metrics
@@ -164,6 +181,7 @@ class Trainer:
             'net': self.model.state_dict(),
             'optimizer': self.optimizer.state_dict(),
             'lr_scheduler': self.lr_scheduler.state_dict(),
+            'scaler': self.scaler.state_dict(),
             'best_val_loss': self.best_val_loss,
             'history': self.logger.get_history(),
         }
@@ -186,6 +204,8 @@ class Trainer:
         self.model.load_state_dict(checkpoint['net'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         self.lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+        if 'scaler' in checkpoint:
+            self.scaler.load_state_dict(checkpoint['scaler'])
 
         self.start_iter = checkpoint['iteration']
         self.best_val_loss = checkpoint.get('best_val_loss', float('inf'))

@@ -20,7 +20,7 @@ The original version of this repo (PyTorch 0.3, Python 3.5, custom C/CUDA extens
 | **RPN deconvs** | Deconv → BN | Deconv → BN → ReLU |
 | **Per-object augmentation** | Rotation around the LiDAR origin (a car at 40 m could move ~12 m); axis-aligned point selection | Rotation around the box center; points selected inside the rotated box |
 | **Batch size** | Hard-coded; last partial batch crashed; `.cuda()` everywhere | Taken from the batch; device-agnostic |
-| **Training** | Fixed 10k iterations, no checkpoints, image dump every iteration | Iteration-based trainer with validation, checkpoints, resume, bfloat16 AMP |
+| **Training** | Fixed 10k iterations, no checkpoints, image dump every iteration | Iteration-based trainer with validation, checkpoints, resume, mixed precision (bfloat16, or float16 on pre-Ampere GPUs) |
 | **Config** | Python class | YAML |
 
 Visualization (mayavi / image overlays) and KITTI AP evaluation are not included yet.
@@ -112,13 +112,15 @@ Key settings in `configs/voxelnet_kitti_car.yaml`:
 | `anchor.pos_iou` / `neg_iou` | 0.6 / 0.45 | BEV IoU thresholds for anchor matching |
 | `dataloader.batch_size` | 2 | Batch size |
 | `train.max_iter` | 297000 | ~160 epochs at batch size 2 |
-| `train.amp` | true | bfloat16 autocast on CUDA |
+| `train.amp` / `amp_dtype` | true / auto | Mixed precision on CUDA: bfloat16 on Ampere+ GPUs, float16 + GradScaler on older ones |
 | `optimizer.lr` | 0.01 | SGD learning rate |
 | `lr_scheduler.milestones` | [278400] | lr × 0.1 after ~150 epochs |
 | `loss.alpha` / `loss.beta` | 1.5 / 1.0 | Positive / negative classification weights |
 | `checkpoint.interval` | 2000 | Validate and save checkpoint every N iterations |
 
-The dense voxel tensor is about 0.7 GB per sample in float32 (half that with bfloat16 AMP).
+The dense voxel tensor is about 0.7 GB per sample in float32 (half that with AMP). Batch size 2 with AMP uses about 5 GB of GPU memory.
+
+On GPUs without native bfloat16 (Turing / RTX 20xx and older), `amp_dtype: auto` switches to float16. Forcing bfloat16 there makes the 3D convolutions fall back to a non-cuDNN kernel with multi-GB temporary buffers.
 
 ## Model Architecture
 

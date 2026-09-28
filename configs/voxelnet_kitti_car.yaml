@@ -32,7 +32,8 @@ dataloader:
 train:
   max_iter: 297000              # ~160 epochs of the 3712-frame train split at batch size 2
   seed: 42
-  amp: true                     # bfloat16 autocast on CUDA (ignored on CPU)
+  amp: true                     # mixed precision on CUDA (ignored on CPU)
+  amp_dtype: auto               # auto: bfloat16 on Ampere+ GPUs, float16 + GradScaler on older ones (e.g. RTX 20xx)
 
 # Augmentation (training only). One of the three is chosen per sample,
 # with the given probabilities (same scheme as the original implementation).

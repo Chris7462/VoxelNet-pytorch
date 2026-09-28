@@ -151,7 +151,8 @@ def main():
     print("\nStarting training...")
     print(f"  Max iterations: {config['train']['max_iter']}")
     print(f"  Checkpoint interval: {config['checkpoint']['interval']}")
-    print(f"  AMP (bfloat16): {trainer.use_amp}")
+    amp = str(trainer.amp_dtype).replace('torch.', '') if trainer.use_amp else 'off'
+    print(f"  AMP: {amp}")
     print("=" * 60)
     trainer.train()
 
