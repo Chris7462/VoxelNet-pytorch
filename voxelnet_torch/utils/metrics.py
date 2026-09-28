@@ -1,3 +1,6 @@
+from .distributed import all_reduce_sum
+
+
 class Metrics:
     """
     Running averages of the training / validation losses.
@@ -31,6 +34,12 @@ class Metrics:
         self.sums['loss_reg'] += loss_reg
         self.sums['num_pos'] += num_pos
         self.count += 1
+
+    def all_reduce(self, device) -> None:
+        """Sum the accumulators over all processes (no-op when not distributed)."""
+        values = all_reduce_sum([self.sums[key] for key in self.KEYS] + [float(self.count)], device)
+        self.sums = dict(zip(self.KEYS, values[:-1]))
+        self.count = int(values[-1])
 
     def get_metrics(self) -> dict:
         """Return the averages since the last reset."""

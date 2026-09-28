@@ -1,14 +1,23 @@
 import argparse
 
 import torch
+import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.nn.parallel import DistributedDataParallel
+from torch.utils.data import DataLoader, DistributedSampler
 
 from voxelnet_torch.datasets import KITTI
 from voxelnet_torch.model import VoxelNet
 from voxelnet_torch.model.loss import VoxelNetLoss
 from voxelnet_torch.engine import Trainer
-from voxelnet_torch.utils import compute_grid_size, load_config, set_seed
+from voxelnet_torch.utils import (
+    cleanup_distributed,
+    compute_grid_size,
+    init_distributed,
+    is_distributed,
+    load_config,
+    set_seed,
+)
 
 
 def parse_args():
@@ -21,14 +30,22 @@ def parse_args():
 
 
 def build_dataloader(config: dict, image_set: str):
-    """Build dataloader for given image set."""
+    """
+    Build dataloader for given image set.
+
+    `dataloader.batch_size` is per process: with DDP on N GPUs the effective batch
+    size is N * batch_size, and each process reads its own shard of the data.
+    """
     training = image_set == 'train'
     dataset = KITTI(config, image_set=image_set, training=training)
+
+    sampler = DistributedSampler(dataset, shuffle=training, drop_last=training) if is_distributed() else None
 
     dataloader = DataLoader(
         dataset,
         batch_size=config['dataloader']['batch_size'],
-        shuffle=training,
+        shuffle=training if sampler is None else False,
+        sampler=sampler,
         num_workers=config['dataloader']['num_workers'],
         collate_fn=dataset.collate,
         pin_memory=True,
@@ -96,37 +113,49 @@ def build_criterion(config: dict):
 def main():
     args = parse_args()
 
+    # Distributed setup (no-op unless launched with torchrun)
+    device, rank, world_size = init_distributed()
+    is_main = rank == 0
+    log = print if is_main else (lambda *a, **k: None)
+
     # Load config
     config = load_config(args.config)
-    print(f"Loaded config from {args.config}")
+    log(f"Loaded config from {args.config}")
 
-    # Set random seed for reproducibility
+    # Set random seed for reproducibility (different augmentation stream per process;
+    # DDP broadcasts rank 0's initial weights to all processes)
     seed = config['train']['seed']
-    set_seed(seed)
-    print(f"Random seed: {seed}")
+    set_seed(seed + rank)
+    log(f"Random seed: {seed}")
 
-    # Device
-    device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
-    print(f"Using device: {device}")
+    log(f"Using device: {device.type}" + (f" x {world_size} processes (DDP)" if world_size > 1 else ""))
 
     # Build dataloaders
-    print("Building dataloaders...")
+    log("Building dataloaders...")
     train_loader = build_dataloader(config, 'train')
     val_loader = build_dataloader(config, 'val')
-    print(f"  Train: {len(train_loader.dataset)} samples, {len(train_loader)} batches")
-    print(f"  Val: {len(val_loader.dataset)} samples, {len(val_loader)} batches")
+    batch_size = config['dataloader']['batch_size']
+    log(f"  Train: {len(train_loader.dataset)} samples, {len(train_loader)} batches per process "
+        f"(effective batch size {batch_size * world_size})")
+    log(f"  Val: {len(val_loader.dataset)} samples, {len(val_loader)} batches per process")
 
     # Build model
-    print("Building model...")
-    model = build_model(config).to(device)
-    print(f"  Grid size (nx, ny, nz): {model.grid_size}")
-    print(f"  Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
+    log("Building model...")
+    model = build_model(config)
+    if world_size > 1 and config['train'].get('sync_bn', False):
+        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        log("  SyncBatchNorm: on")
+    model = model.to(device)
+    log(f"  Grid size (nx, ny, nz): {model.grid_size}")
+    log(f"  Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
+    if world_size > 1:
+        model = DistributedDataParallel(model, device_ids=[device.index] if device.type == 'cuda' else None)
 
     # Build optimizer and lr scheduler
     optimizer = build_optimizer(config, model)
     lr_scheduler = build_lr_scheduler(config, optimizer)
-    print(f"  Initial LR: {optimizer.param_groups[0]['lr']:.6f}, "
-          f"milestones: {config['lr_scheduler']['milestones']}")
+    log(f"  Initial LR: {optimizer.param_groups[0]['lr']:.6f}, "
+        f"milestones: {config['lr_scheduler']['milestones']}")
 
     # Build criterion
     criterion = build_criterion(config).to(device)
@@ -148,12 +177,14 @@ def main():
         trainer.load_checkpoint(args.resume)
 
     # Train
-    print("\nStarting training...")
-    print(f"  Max iterations: {config['train']['max_iter']}")
-    print(f"  Checkpoint interval: {config['checkpoint']['interval']}")
-    print(f"  AMP (bfloat16): {trainer.use_amp}")
-    print("=" * 60)
+    log("\nStarting training...")
+    log(f"  Max iterations: {config['train']['max_iter']}")
+    log(f"  Checkpoint interval: {config['checkpoint']['interval']}")
+    log(f"  AMP (bfloat16): {trainer.use_amp}")
+    log("=" * 60)
     trainer.train()
+
+    cleanup_distributed()
 
 
 if __name__ == '__main__':

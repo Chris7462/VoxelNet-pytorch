@@ -12,6 +12,15 @@ from .box_ops import (
 )
 from .config import load_config, compute_grid_size
 from .data import infinite_loader
+from .distributed import (
+    init_distributed,
+    cleanup_distributed,
+    is_distributed,
+    is_main_process,
+    get_rank,
+    get_world_size,
+    barrier,
+)
 from .logger import Logger
 from .metrics import Metrics
 from .postprocessing import decode_predictions, postprocess
@@ -33,6 +42,13 @@ __all__ = [
     "load_config",
     "compute_grid_size",
     "infinite_loader",
+    "init_distributed",
+    "cleanup_distributed",
+    "is_distributed",
+    "is_main_process",
+    "get_rank",
+    "get_world_size",
+    "barrier",
     "Logger",
     "Metrics",
     "decode_predictions",
