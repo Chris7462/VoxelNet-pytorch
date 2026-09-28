@@ -109,6 +109,15 @@ Select specific GPUs with `CUDA_VISIBLE_DEVICES`, e.g. `CUDA_VISIBLE_DEVICES=0,1
 - `configs/voxelnet_kitti_car_3gpu.yaml` rescales the iteration-based schedule to the same ~160 epochs (`max_iter: 99000`, milestone at ~150 epochs) and turns on `train.sync_bn`. The learning rate is unchanged (0.01).
 - Each process validates its own shard of the val split, and losses are averaged over all processes. Only rank 0 prints, logs and writes checkpoints.
 
+The schedule is iteration-based, so for a different number of GPUs rescale `max_iter` and `lr_scheduler.milestones` to keep ~160 epochs (lr drop at ~150) with `epochs × 3712 / (num_gpus × batch_size)`:
+
+| GPUs | Effective batch size | `max_iter` | `milestones` |
+|------|----------------------|------------|--------------|
+| 1 | 2 | 297000 | [278400] |
+| 2 | 4 | 148500 | [139200] |
+| 3 | 6 | 99000 | [92800] |
+| 4 | 8 | 74250 | [69600] |
+
 Training outputs (in `checkpoints/`, configurable):
 - `latest.pth` and `best.pth` (lowest validation loss)
 - `history.json` with train / validation losses at every checkpoint
