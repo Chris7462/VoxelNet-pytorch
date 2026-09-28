@@ -58,7 +58,14 @@ Crop the point clouds to the left camera's field of view (writes `training/crop/
 python tools/crop_kitti.py --root data/KITTI
 ```
 
-Put the train/val split of [Chen et al. (MV3D)](https://xiaozhichen.github.io/files/mv3d/imagesets.tar.gz) (3712 / 3769 frames) in `ImageSets/`.
+Download the standard train/val split of Chen et al. (3DOP / MV3D), 3712 / 3769 frames, into `ImageSets/` (the original `imagesets.tar.gz` link is gone; OpenPCDet ships the same split):
+```bash
+mkdir -p data/KITTI/ImageSets
+for f in train val; do
+  curl -L -o data/KITTI/ImageSets/$f.txt \
+    https://raw.githubusercontent.com/open-mmlab/OpenPCDet/master/data/kitti/ImageSets/$f.txt
+done
+```
 
 Expected structure:
 ```
