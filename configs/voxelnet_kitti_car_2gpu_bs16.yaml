@@ -1,0 +1,93 @@
+# VoxelNet Configuration for KITTI (Car), paper batch size 16 on 2 GPUs with DDP
+#   CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 tools/train.py --config configs/voxelnet_kitti_car_2gpu_bs16.yaml
+# Follows the paper's schedule: batch size 16, SGD lr 0.01 for 150 epochs, then 0.001 for 10 epochs
+# (3712 / 16 = 232 iterations per epoch). SmoothL1 beta 1/9 as in the TF reference implementation.
+
+# Dataset
+dataset:
+  root: data/KITTI
+  lidar_dir: crop               # FOV-cropped point clouds produced by tools/crop_kitti.py
+  classes: [Car, Van]
+  # [x_min, y_min, z_min, x_max, y_max, z_max] in LiDAR frame (meters)
+  point_cloud_range: [0.0, -40.0, -3.0, 70.4, 40.0, 1.0]
+  voxel_size: [0.2, 0.2, 0.4]   # [vx, vy, vz] -> grid (nx, ny, nz) = (352, 400, 10)
+  max_points_per_voxel: 35      # T in the paper
+
+# Anchors (one set per BEV feature-map cell, stride 2 w.r.t. the voxel grid)
+anchor:
+  size: [1.56, 1.6, 3.9]        # [h, w, l]
+  z_center: -1.0                # anchor *center* height; boxes internally use bottom-center z
+  rotations: [0.0, 1.5707963]   # [0, pi/2] -> 2 anchors per position
+  pos_iou: 0.6
+  neg_iou: 0.45
+
+# Model
+model:
+  vfe_channels: [32, 128]       # VFE-1, VFE-2 output channels
+  voxel_feature_dim: 128        # final FCN channels of the SVFE
+
+# Dataloader
+dataloader:
+  batch_size: 8                 # per GPU -> effective batch size 16
+  num_workers: 8                # per GPU; data preparation is CPU-bound at this batch size
+
+# Training
+train:
+  max_iter: 37120               # 160 epochs x 232 iterations
+  seed: 42
+  amp: true                     # bfloat16 autocast on CUDA (ignored on CPU)
+  sync_bn: true                 # BatchNorm statistics over all 16 samples
+
+# Augmentation (training only). One of the three is chosen per sample,
+# with the given probabilities (same scheme as the original implementation).
+augmentation:
+  enabled: true
+  prob_per_object: 0.333        # per-GT-box random rotation + translation
+  prob_global_rotation: 0.333   # global rotation around the LiDAR z axis
+  prob_global_scaling: 0.334    # global scaling
+  per_object_rotation: 0.31416  # uniform(-r, r), pi/10
+  per_object_translation_std: 1.0
+  per_object_max_trials: 100
+  global_rotation: 0.78540      # uniform(-r, r), pi/4
+  global_scaling: [0.95, 1.05]
+
+# Optimizer (paper: SGD, lr 0.01, then 0.001 for the last epochs)
+optimizer:
+  type: SGD
+  lr: 0.01
+  momentum: 0.0
+  weight_decay: 0.0
+
+# Learning rate scheduler (MultiStepLR, stepped per iteration)
+lr_scheduler:
+  milestones: [34800]          # 150 epochs, then lr x0.1 for the last 10 (as in the paper)
+  gamma: 0.1
+
+# Loss
+loss:
+  alpha: 1.5                    # positive classification weight
+  beta: 1.0                     # negative classification weight
+  reg_weight: 1.0
+  smooth_l1_beta: 0.1111        # 1/9, as in the TF reference implementation (sigma = 3)
+
+# Post-processing (decoding + NMS, used for inference)
+postprocess:
+  score_threshold: 0.5
+  nms_iou_threshold: 0.1        # IoU on bird's-eye-view standup boxes
+  max_detections: 100
+
+# Evaluation (tools/evaluate.py): KITTI 2D / BEV / 3D AP on the val split
+evaluation:
+  score_threshold: 0.1          # low threshold: AP integrates over all score levels
+  nms_iou_threshold: 0.1
+  max_detections: 100
+  output_dir: outputs/eval
+
+# Checkpoints (save checkpoint with validation every N iterations)
+checkpoint:
+  save_dir: checkpoints_bs16
+  interval: 2320                # every 10 epochs
+
+# Logging
+logging:
+  print_interval: 20

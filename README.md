@@ -118,6 +118,11 @@ The schedule is iteration-based, so for a different number of GPUs rescale `max_
 | 3 | 6 | 99000 | [92800] |
 | 4 | 8 | 74250 | [69600] |
 
+`configs/voxelnet_kitti_car_2gpu_bs16.yaml` follows the paper's setting instead: batch size 16 (2 GPUs × 8), SGD lr 0.01 for 150 epochs and 0.001 for 10 more (`max_iter: 37120`, `milestones: [34800]`), with SmoothL1 beta 1/9:
+```bash
+CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 tools/train.py --config configs/voxelnet_kitti_car_2gpu_bs16.yaml
+```
+
 Training outputs (in `checkpoints/`, configurable):
 - `latest.pth` and `best.pth` (lowest validation loss)
 - `history.json` with train / validation losses at every checkpoint
@@ -200,7 +205,8 @@ Boxes are `[x, y, z, h, w, l, yaw]` in the LiDAR frame with `z` the bottom-cente
 ├── pyproject.toml              # Package configuration
 ├── configs/
 │   ├── voxelnet_kitti_car.yaml       # KITTI Car, single GPU
-│   └── voxelnet_kitti_car_3gpu.yaml  # KITTI Car, 3 GPUs (DDP)
+│   ├── voxelnet_kitti_car_3gpu.yaml  # KITTI Car, 3 GPUs (DDP)
+│   └── voxelnet_kitti_car_2gpu_bs16.yaml  # KITTI Car, paper batch size 16 on 2 GPUs (DDP)
 ├── voxelnet_torch/             # Python package
 │   ├── datasets/
 │   │   ├── kitti.py            # KITTI dataset + collate
