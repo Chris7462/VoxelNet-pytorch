@@ -28,15 +28,23 @@ class KITTI(Dataset):
         config: Full configuration dictionary
         image_set: Split name, e.g. 'train' or 'val' (reads ImageSets/<image_set>.txt)
         training: Enable augmentation and point shuffling
+        assign_targets: Compute the RPN training targets (not needed for inference)
     """
 
-    def __init__(self, config: dict, image_set: str, training: bool = False) -> None:
+    def __init__(
+        self,
+        config: dict,
+        image_set: str,
+        training: bool = False,
+        assign_targets: bool = True,
+    ) -> None:
         super().__init__()
 
         data_cfg = config['dataset']
         self.root = data_cfg['root']
         self.image_set = image_set
         self.training = training
+        self.assign_targets = assign_targets
         self.classes = data_cfg['classes']
 
         data_dir = os.path.join(self.root, 'training')
@@ -117,18 +125,20 @@ class KITTI(Dataset):
             points = points[rng.permutation(len(points))]
 
         voxels, num_points, coords = self.voxelizer(points)
-        pos_equal_one, neg_equal_one, targets = self.target_assigner(gt_boxes)
 
-        return {
+        sample = {
             'voxels': voxels,
             'num_points': num_points,
             'coords': coords,
-            'pos_equal_one': pos_equal_one,
-            'neg_equal_one': neg_equal_one,
-            'targets': targets,
             'gt_boxes': gt_boxes.astype(np.float32),
             'frame_id': frame_id,
         }
+
+        if self.assign_targets:
+            pos_equal_one, neg_equal_one, targets = self.target_assigner(gt_boxes)
+            sample.update(pos_equal_one=pos_equal_one, neg_equal_one=neg_equal_one, targets=targets)
+
+        return sample
 
     def __len__(self) -> int:
         return len(self.frame_ids)
@@ -151,14 +161,17 @@ class KITTI(Dataset):
             for i, b in enumerate(batch)
         ]
 
-        return {
+        collated = {
             'voxels': torch.from_numpy(np.concatenate([b['voxels'] for b in batch])),
             'num_points': torch.from_numpy(np.concatenate([b['num_points'] for b in batch])).long(),
             'coords': torch.from_numpy(np.concatenate(coords)).long(),
-            'pos_equal_one': torch.from_numpy(np.stack([b['pos_equal_one'] for b in batch])),
-            'neg_equal_one': torch.from_numpy(np.stack([b['neg_equal_one'] for b in batch])),
-            'targets': torch.from_numpy(np.stack([b['targets'] for b in batch])),
             'gt_boxes': [torch.from_numpy(b['gt_boxes']) for b in batch],
             'frame_id': [b['frame_id'] for b in batch],
             'batch_size': len(batch),
         }
+
+        for key in ('pos_equal_one', 'neg_equal_one', 'targets'):
+            if key in batch[0]:
+                collated[key] = torch.from_numpy(np.stack([b[key] for b in batch]))
+
+        return collated
