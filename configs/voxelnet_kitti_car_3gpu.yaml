@@ -1,4 +1,6 @@
-# VoxelNet Configuration for KITTI (Car)
+# VoxelNet Configuration for KITTI (Car), 3 GPUs with DDP
+#   torchrun --nproc_per_node=3 tools/train.py --config configs/voxelnet_kitti_car_3gpu.yaml
+# Same as voxelnet_kitti_car.yaml, with the schedule rescaled for an effective batch size of 6.
 
 # Dataset
 dataset:
@@ -30,10 +32,10 @@ dataloader:
 
 # Training
 train:
-  max_iter: 297000              # ~160 epochs of the 3712-frame train split at batch size 2
+  max_iter: 99000               # ~160 epochs of the 3712-frame train split at effective batch size 6
   seed: 42
   amp: true                     # bfloat16 autocast on CUDA (ignored on CPU)
-  sync_bn: false                # SyncBatchNorm across GPUs (multi-GPU only)
+  sync_bn: true                 # BatchNorm statistics over all 6 samples instead of 2 per GPU
 
 # Augmentation (training only). One of the three is chosen per sample,
 # with the given probabilities (same scheme as the original implementation).
@@ -57,7 +59,7 @@ optimizer:
 
 # Learning rate scheduler (MultiStepLR, stepped per iteration)
 lr_scheduler:
-  milestones: [278400]         # ~150 epochs, then lr x0.1 for the last ~10 (as in the paper)
+  milestones: [92800]          # ~150 epochs, then lr x0.1 for the last ~10 (as in the paper)
   gamma: 0.1
 
 # Loss
@@ -76,7 +78,7 @@ postprocess:
 # Checkpoints (save checkpoint with validation every N iterations)
 checkpoint:
   save_dir: checkpoints
-  interval: 2000
+  interval: 5000
 
 # Logging
 logging:

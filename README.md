@@ -20,7 +20,7 @@ The original version of this repo (PyTorch 0.3, Python 3.5, custom C/CUDA extens
 | **RPN deconvs** | Deconv → BN | Deconv → BN → ReLU |
 | **Per-object augmentation** | Rotation around the LiDAR origin (a car at 40 m could move ~12 m); axis-aligned point selection | Rotation around the box center; points selected inside the rotated box |
 | **Batch size** | Hard-coded; last partial batch crashed; `.cuda()` everywhere | Taken from the batch; device-agnostic |
-| **Training** | Fixed 10k iterations, no checkpoints, image dump every iteration | Iteration-based trainer with validation, checkpoints, resume, bfloat16 AMP |
+| **Training** | Fixed 10k iterations, no checkpoints, image dump every iteration | Iteration-based trainer with validation, checkpoints, resume, bfloat16 AMP, multi-GPU (DDP) |
 | **Config** | Python class | YAML |
 
 Visualization (mayavi / image overlays) and KITTI AP evaluation are not included yet.
@@ -96,6 +96,28 @@ Resume from checkpoint:
 python tools/train.py --config configs/voxelnet_kitti_car.yaml --resume checkpoints/latest.pth
 ```
 
+### Multi-GPU Training (DDP)
+
+Launch one process per GPU with `torchrun`:
+```bash
+torchrun --nproc_per_node=3 tools/train.py --config configs/voxelnet_kitti_car_3gpu.yaml
+```
+
+Select specific GPUs with `CUDA_VISIBLE_DEVICES`, e.g. `CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 ...`. Resume works the same way (`--resume checkpoints/latest.pth`), and checkpoints are interchangeable between single- and multi-GPU runs.
+
+- `dataloader.batch_size` is per GPU, so 3 GPUs × 2 = effective batch size 6.
+- `configs/voxelnet_kitti_car_3gpu.yaml` rescales the iteration-based schedule to the same ~160 epochs (`max_iter: 99000`, milestone at ~150 epochs) and turns on `train.sync_bn`. The learning rate is unchanged (0.01).
+- Each process validates its own shard of the val split, and losses are averaged over all processes. Only rank 0 prints, logs and writes checkpoints.
+
+The schedule is iteration-based, so for a different number of GPUs rescale `max_iter` and `lr_scheduler.milestones` to keep ~160 epochs (lr drop at ~150) with `epochs × 3712 / (num_gpus × batch_size)`:
+
+| GPUs | Effective batch size | `max_iter` | `milestones` |
+|------|----------------------|------------|--------------|
+| 1 | 2 | 297000 | [278400] |
+| 2 | 4 | 148500 | [139200] |
+| 3 | 6 | 99000 | [92800] |
+| 4 | 8 | 74250 | [69600] |
+
 Training outputs (in `checkpoints/`, configurable):
 - `latest.pth` and `best.pth` (lowest validation loss)
 - `history.json` with train / validation losses at every checkpoint
@@ -110,7 +132,7 @@ Key settings in `configs/voxelnet_kitti_car.yaml`:
 | `dataset.voxel_size` | [0.2, 0.2, 0.4] | Voxel size → grid (352, 400, 10) |
 | `dataset.max_points_per_voxel` | 35 | T in the paper |
 | `anchor.pos_iou` / `neg_iou` | 0.6 / 0.45 | BEV IoU thresholds for anchor matching |
-| `dataloader.batch_size` | 2 | Batch size |
+| `dataloader.batch_size` | 2 | Batch size per GPU |
 | `train.max_iter` | 297000 | ~160 epochs at batch size 2 |
 | `train.amp` | true | bfloat16 autocast on CUDA |
 | `optimizer.lr` | 0.01 | SGD learning rate |
@@ -157,7 +179,8 @@ Boxes are `[x, y, z, h, w, l, yaw]` in the LiDAR frame with `z` the bottom-cente
 ```
 ├── pyproject.toml              # Package configuration
 ├── configs/
-│   └── voxelnet_kitti_car.yaml # KITTI Car training config
+│   ├── voxelnet_kitti_car.yaml       # KITTI Car, single GPU
+│   └── voxelnet_kitti_car_3gpu.yaml  # KITTI Car, 3 GPUs (DDP)
 ├── voxelnet_torch/             # Python package
 │   ├── datasets/
 │   │   ├── kitti.py            # KITTI dataset + collate
@@ -174,13 +197,14 @@ Boxes are `[x, y, z, h, w, l, yaw]` in the LiDAR frame with `z` the bottom-cente
 │   │   ├── loss/               # VoxelNet loss
 │   │   └── net/                # Full network
 │   ├── engine/
-│   │   └── trainer.py          # Training loop, validation, checkpoints
+│   │   └── trainer.py          # Training loop (single GPU / DDP), validation, checkpoints
 │   └── utils/
 │       ├── anchors.py          # Anchor generation
 │       ├── box_ops.py          # Box conversions, IoU, encode / decode
 │       ├── postprocessing.py   # Decoding + NMS
 │       ├── config.py           # Config loading, grid size
 │       ├── data.py             # Infinite loader
+│       ├── distributed.py      # DDP setup and helpers
 │       ├── logger.py           # History tracking
 │       ├── metrics.py          # Running loss averages
 │       └── seed.py             # Reproducibility
