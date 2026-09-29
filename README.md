@@ -23,7 +23,7 @@ The original version of this repo (PyTorch 0.3, Python 3.5, custom C/CUDA extens
 | **Training** | Fixed 10k iterations, no checkpoints, image dump every iteration | Iteration-based trainer with validation, checkpoints, resume, bfloat16 AMP, multi-GPU (DDP) |
 | **Config** | Python class | YAML |
 
-Visualization (mayavi / image overlays) and KITTI AP evaluation are not included yet.
+Visualization (mayavi / image overlays) is not included yet.
 
 ## Installation
 
@@ -142,6 +142,26 @@ Key settings in `configs/voxelnet_kitti_car.yaml`:
 
 The dense voxel tensor is about 0.7 GB per sample in float32 (half that with bfloat16 AMP).
 
+## Evaluation
+
+Run the model on the val split and compute the KITTI AP for `Car` (2D bbox / BEV / 3D, easy / moderate / hard, 11 and 40 recall points):
+```bash
+python tools/evaluate.py --config configs/voxelnet_kitti_car.yaml --checkpoint checkpoints/best.pth
+```
+
+Evaluate existing KITTI-format prediction files (label format with a trailing score column), e.g. from another checkpoint or method:
+```bash
+python tools/evaluate.py --config configs/voxelnet_kitti_car.yaml --pred_dir outputs/eval/predictions
+```
+
+Evaluation outputs (in `outputs/eval/`, configurable with `evaluation.output_dir` or `--output_dir`):
+- `predictions/<frame>.txt`: detections in the KITTI label format, usable with the official devkit
+- `results.txt` / `results.json`: AP at the two standard IoU settings (0.7 / 0.7 / 0.7 and 0.7 / 0.5 / 0.5 for bbox / BEV / 3D)
+
+The metric is a NumPy port of `kitti_object_eval_python` (as used by second.pytorch and OpenPCDet), which follows the official devkit: Van is ignored for Car, DontCare regions are ignored in 2D, and the difficulty levels use the usual height / occlusion / truncation limits. It gives identical numbers to OpenPCDet's implementation (checked on synthetic detections) without needing numba or CUDA.
+
+Detections are kept above `evaluation.score_threshold` (0.1) and filtered with NMS on bird's-eye-view standup boxes. The model does not predict the heading direction (yaw is learned modulo π), so AOS is not reported.
+
 ## Model Architecture
 
 ```
@@ -197,10 +217,12 @@ Boxes are `[x, y, z, h, w, l, yaw]` in the LiDAR frame with `z` the bottom-cente
 │   │   ├── loss/               # VoxelNet loss
 │   │   └── net/                # Full network
 │   ├── engine/
-│   │   └── trainer.py          # Training loop (single GPU / DDP), validation, checkpoints
+│   │   ├── trainer.py          # Training loop (single GPU / DDP), validation, checkpoints
+│   │   └── evaluator.py        # Inference, KITTI-format predictions, AP
 │   └── utils/
 │       ├── anchors.py          # Anchor generation
 │       ├── box_ops.py          # Box conversions, IoU, encode / decode
+│       ├── kitti_eval.py       # KITTI AP (2D / BEV / 3D, R11 / R40)
 │       ├── postprocessing.py   # Decoding + NMS
 │       ├── config.py           # Config loading, grid size
 │       ├── data.py             # Infinite loader
@@ -210,6 +232,7 @@ Boxes are `[x, y, z, h, w, l, yaw]` in the LiDAR frame with `z` the bottom-cente
 │       └── seed.py             # Reproducibility
 ├── tools/
 │   ├── train.py                # Training script
+│   ├── evaluate.py             # Evaluation script
 │   └── crop_kitti.py           # Crop point clouds to the camera FOV
 └── tests/                      # pytest suite (synthetic KITTI data, CPU)
 ```
@@ -218,7 +241,7 @@ Boxes are `[x, y, z, h, w, l, yaw]` in the LiDAR frame with `z` the bottom-cente
 - [x] Port to PyTorch 2.x
 - [x] Fix IoU, calibration, anchor, and architecture issues
 - [ ] Visualization (BEV, image projection)
-- [ ] KITTI evaluation (BEV / 3D AP)
+- [x] KITTI evaluation (2D / BEV / 3D AP)
 - [ ] Reproduce results for `Car`, `Pedestrian` and `Cyclist`
 
 ## Reference
