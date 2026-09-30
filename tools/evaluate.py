@@ -34,6 +34,12 @@ def parse_args():
                         help='Split to evaluate (ImageSets/<split>.txt)')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Output directory (default: evaluation.output_dir in the config)')
+    parser.add_argument('--nms_type', type=str, default=None, choices=['standup', 'rotated'],
+                        help='Override evaluation.nms_type')
+    parser.add_argument('--nms_iou_threshold', type=float, default=None,
+                        help='Override evaluation.nms_iou_threshold')
+    parser.add_argument('--score_threshold', type=float, default=None,
+                        help='Override evaluation.score_threshold')
     args = parser.parse_args()
     if (args.checkpoint is None) == (args.pred_dir is None):
         parser.error('Pass exactly one of --checkpoint or --pred_dir')
@@ -58,7 +64,11 @@ def main():
     config = load_config(args.config)
     print(f"Loaded config from {args.config}")
 
-    output_dir = args.output_dir or config['evaluation']['output_dir']
+    eval_cfg = config['evaluation']
+    for key in ('nms_type', 'nms_iou_threshold', 'score_threshold'):
+        if getattr(args, key) is not None:
+            eval_cfg[key] = getattr(args, key)
+    output_dir = args.output_dir or eval_cfg['output_dir']
     root = config['dataset']['root']
     classes = ('Car',)
 
@@ -88,6 +98,10 @@ def main():
     checkpoint = torch.load(args.checkpoint, map_location=device)
     model.load_state_dict(checkpoint['net'])
     print(f"Loaded checkpoint: {args.checkpoint} (iteration {checkpoint.get('iteration', '?')})")
+
+    print(f"Post-processing: score > {eval_cfg['score_threshold']}, "
+          f"{eval_cfg.get('nms_type', 'standup')} NMS @ IoU {eval_cfg['nms_iou_threshold']}, "
+          f"max {eval_cfg['max_detections']} detections")
 
     evaluator = Evaluator(model, data_loader, config, device, output_dir)
     frame_ids = evaluator.predict()

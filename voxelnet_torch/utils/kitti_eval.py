@@ -77,7 +77,7 @@ def _bev_corners(annos: dict) -> np.ndarray:
     return np.stack([cos * u + sin * v + x[:, None], -sin * u + cos * v + z[:, None]], axis=-1)
 
 
-def _convex_intersection_area(subject: list, clipper: list) -> float:
+def convex_intersection_area(subject: list, clipper: list) -> float:
     """Area of the intersection of two convex counter-clockwise polygons (Sutherland-Hodgman)."""
     output = subject
     for k in range(len(clipper)):
@@ -130,7 +130,7 @@ def bev_intersection(dt_annos: dict, gt_annos: dict) -> np.ndarray:
     dt_polys = [list(map(tuple, c)) for c in dt_corners.tolist()]
     gt_polys = [list(map(tuple, c)) for c in gt_corners.tolist()]
     for i, j in zip(*np.nonzero(candidates)):
-        inter[i, j] = _convex_intersection_area(dt_polys[i], gt_polys[j])
+        inter[i, j] = convex_intersection_area(dt_polys[i], gt_polys[j])
     return inter
 
 

@@ -9,6 +9,8 @@ from .box_ops import (
     points_in_boxes,
     encode_boxes,
     decode_boxes,
+    rotated_bev_iou,
+    rotated_nms,
 )
 from .config import load_config, compute_grid_size
 from .data import infinite_loader
@@ -39,6 +41,8 @@ __all__ = [
     "points_in_boxes",
     "encode_boxes",
     "decode_boxes",
+    "rotated_bev_iou",
+    "rotated_nms",
     "load_config",
     "compute_grid_size",
     "infinite_loader",

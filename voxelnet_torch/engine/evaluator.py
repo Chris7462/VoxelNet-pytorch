@@ -54,6 +54,8 @@ class Evaluator:
         self.score_threshold = eval_cfg['score_threshold']
         self.nms_iou_threshold = eval_cfg['nms_iou_threshold']
         self.max_detections = eval_cfg['max_detections']
+        self.nms_type = eval_cfg.get('nms_type', 'standup')
+        self.pre_nms_top_k = eval_cfg.get('pre_nms_top_k', None)
         self.use_amp = bool(config['train'].get('amp', False)) and self.device.type == 'cuda'
 
         data_dir = os.path.join(config['dataset']['root'], 'training')
@@ -90,6 +92,8 @@ class Evaluator:
                 score_threshold=self.score_threshold,
                 nms_iou_threshold=self.nms_iou_threshold,
                 max_detections=self.max_detections,
+                nms_type=self.nms_type,
+                pre_nms_top_k=self.pre_nms_top_k,
             )
 
             for frame_id, det in zip(sample['frame_id'], detections):

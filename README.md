@@ -176,7 +176,11 @@ Evaluation outputs (in `outputs/eval/`, configurable with `evaluation.output_dir
 
 The metric is a NumPy port of `kitti_object_eval_python` (as used by second.pytorch and OpenPCDet), which follows the official devkit: Van is ignored for Car, DontCare regions are ignored in 2D, and the difficulty levels use the usual height / occlusion / truncation limits. It gives identical numbers to OpenPCDet's implementation (checked on synthetic detections) without needing numba or CUDA.
 
-Detections are kept above `evaluation.score_threshold` (0.1) and filtered with NMS on bird's-eye-view standup boxes. The model does not predict the heading direction (yaw is learned modulo π), so AOS is not reported.
+Detections are kept above `evaluation.score_threshold` (0.1) and filtered with NMS in bird's-eye view. `evaluation.nms_type: standup` (default, as in the original implementation) uses the IoU of the axis-aligned enclosing rectangles; `rotated` uses the IoU of the rotated rectangles, which does not suppress neighbouring cars parked at an angle. Post-processing can be overridden from the command line without editing the config:
+```bash
+python tools/evaluate.py --config configs/voxelnet_kitti_car.yaml --checkpoint checkpoints/latest.pth \
+    --nms_type rotated --nms_iou_threshold 0.1 --output_dir outputs/eval_rotated
+``` The model does not predict the heading direction (yaw is learned modulo π), so AOS is not reported.
 
 ## Model Architecture
 

@@ -83,3 +83,28 @@ def test_points_in_boxes():
         [10.0, 0.0, -0.3],    # inside, near the top
     ])
     np.testing.assert_array_equal(points_in_boxes(points, box)[:, 0], [True, False, False, True])
+
+
+def test_rotated_bev_iou_and_nms():
+    from voxelnet_torch.utils import rotated_bev_iou, rotated_nms, iou_2d
+
+    box = np.array([[10.0, 0.0, -1.7, 1.5, 2.0, 4.0, 0.0]])
+    rotated = box.copy()
+    rotated[0, 6] = np.pi / 2
+    np.testing.assert_allclose(rotated_bev_iou(box, box), [[1.0]])
+    np.testing.assert_allclose(rotated_bev_iou(box, rotated), [[1 / 3]])   # 2x2 / (8 + 8 - 4)
+
+    # Two cars parked side by side at 45 degrees: their enclosing rectangles overlap
+    # (so standup NMS at 0.1 removes one), their actual footprints do not
+    yaw, gap = np.pi / 4, 2.2
+    c2 = np.array([20.0, 0.0]) + gap * np.array([-np.sin(yaw), np.cos(yaw)])
+    boxes = np.array([[20.0, 0.0, -1.7, 1.5, 1.8, 4.2, yaw], [c2[0], c2[1], -1.7, 1.5, 1.8, 4.2, yaw]])
+    assert iou_2d(boxes_to_standup_bev(boxes[:1]), boxes_to_standup_bev(boxes[1:]))[0, 0] > 0.1
+    assert rotated_bev_iou(boxes[:1], boxes[1:])[0, 0] == 0.0
+    assert rotated_nms(boxes, np.array([0.9, 0.8]), 0.1).tolist() == [0, 1]
+
+    # Duplicates of the same car are suppressed, highest score kept
+    dup = np.repeat(box, 3, axis=0)
+    dup[:, 0] += [0.0, 0.1, 0.2]
+    assert rotated_nms(dup, np.array([0.5, 0.9, 0.7]), 0.1).tolist() == [1]
+    assert len(rotated_nms(np.zeros((0, 7)), np.zeros(0), 0.1)) == 0

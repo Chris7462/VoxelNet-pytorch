@@ -113,6 +113,20 @@ def test_evaluator_perfect_predictions(eval_root, tmp_path):
     assert (tmp_path / 'eval' / 'results.txt').exists() and (tmp_path / 'eval' / 'results.json').exists()
 
 
+@pytest.mark.parametrize('nms_type', ['rotated'])
+def test_evaluator_perfect_predictions_rotated_nms(eval_root, tmp_path, nms_type):
+    config = small_config(eval_root)
+    config['evaluation'].update(nms_type=nms_type, pre_nms_top_k=1000)
+    dataset = KITTI(config, 'val', training=False, assign_targets=False)
+    loader = DataLoader(dataset, batch_size=2, collate_fn=KITTI.collate)
+
+    evaluator = Evaluator(PerfectModel(perfect_outputs(config, 2)), loader, config,
+                          torch.device('cpu'), tmp_path / 'eval')
+    results = evaluator.evaluate(evaluator.predict())
+    for metric in ('bbox', 'bev', '3d'):
+        assert min(results['Car']['0.70_0.70_0.70'][metric]['R40']) > 99.9
+
+
 def test_evaluate_script_pred_dir(eval_root, tmp_path):
     """tools/evaluate.py --pred_dir: labels evaluated against themselves give 100 AP."""
     config = small_config(eval_root)

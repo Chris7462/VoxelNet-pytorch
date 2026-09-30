@@ -194,3 +194,74 @@ def boxes_to_standup_bev_torch(boxes: Tensor) -> Tensor:
     half_x = (l * cos + w * sin) / 2
     half_y = (l * sin + w * cos) / 2
     return torch.stack([x - half_x, y - half_y, x + half_x, y + half_y], dim=1)
+
+
+def rotated_bev_iou(boxes_a: np.ndarray, boxes_b: np.ndarray) -> np.ndarray:
+    """
+    IoU of the rotated bird's-eye-view rectangles of two sets of boxes.
+
+    Args:
+        boxes_a: (N, 7) boxes
+        boxes_b: (K, 7) boxes
+
+    Returns:
+        (N, K) IoU matrix
+    """
+    from .kitti_eval import convex_intersection_area
+
+    boxes_a = np.asarray(boxes_a, dtype=np.float64).reshape(-1, 7)
+    boxes_b = np.asarray(boxes_b, dtype=np.float64).reshape(-1, 7)
+    iou = np.zeros((len(boxes_a), len(boxes_b)))
+    if len(boxes_a) == 0 or len(boxes_b) == 0:
+        return iou
+
+    # Only pairs whose enclosing rectangles overlap can intersect
+    candidates = iou_2d(boxes_to_standup_bev(boxes_a), boxes_to_standup_bev(boxes_b)) > 0
+    corners_a = boxes_to_bev_corners(boxes_a).tolist()        # counter-clockwise
+    corners_b = boxes_to_bev_corners(boxes_b).tolist()
+    area_a = boxes_a[:, 4] * boxes_a[:, 5]
+    area_b = boxes_b[:, 4] * boxes_b[:, 5]
+
+    for i, j in zip(*np.nonzero(candidates)):
+        inter = convex_intersection_area([tuple(p) for p in corners_a[i]], [tuple(p) for p in corners_b[j]])
+        union = area_a[i] + area_b[j] - inter
+        iou[i, j] = inter / union if union > 0 else 0.0
+    return iou
+
+
+def rotated_nms(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float) -> np.ndarray:
+    """
+    Greedy NMS with rotated bird's-eye-view IoU.
+
+    Args:
+        boxes: (N, 7) boxes
+        scores: (N,) scores
+        iou_threshold: Boxes overlapping a kept box by more than this are removed
+
+    Returns:
+        Indices of the kept boxes, sorted by decreasing score
+    """
+    boxes = np.asarray(boxes, dtype=np.float64).reshape(-1, 7)
+    order = np.argsort(-np.asarray(scores), kind='stable')
+    if len(order) == 0:
+        return order
+    boxes = boxes[order]
+
+    # Rotated IoU is only computed between each kept box and the remaining boxes whose
+    # enclosing rectangles overlap it, so the cost scales with the number of kept boxes
+    standup = boxes_to_standup_bev(boxes)
+    active = np.ones(len(boxes), dtype=bool)
+    keep = []
+    for i in range(len(boxes)):
+        if not active[i]:
+            continue
+        keep.append(order[i])
+        active[i] = False
+        rest = np.nonzero(active)[0]
+        if len(rest) == 0:
+            break
+        rest = rest[iou_2d(standup[i:i + 1], standup[rest])[0] > 0]
+        if len(rest) > 0:
+            iou = rotated_bev_iou(boxes[i:i + 1], boxes[rest])[0]
+            active[rest[iou > iou_threshold]] = False
+    return np.array(keep, dtype=np.int64)
