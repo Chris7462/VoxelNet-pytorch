@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from voxelnet_torch.datasets import KITTI
 from voxelnet_torch.model import VoxelNet
 from voxelnet_torch.model.loss import VoxelNetLoss
-from voxelnet_torch.engine import Trainer
+from voxelnet_torch.engine import Trainer, WarmupCosineLR
 from voxelnet_torch.utils import (
     cleanup_distributed,
     compute_grid_size,
@@ -70,30 +70,64 @@ def build_model(config: dict):
 
 
 def build_optimizer(config: dict, model):
-    """Build optimizer."""
+    """
+    Build SGD optimizer.
+
+    Weight decay is applied to conv / linear weights only; BatchNorm parameters and
+    biases (all 1-D parameters) are not decayed.
+    """
     optimizer_cfg = config['optimizer']
+    weight_decay = optimizer_cfg.get('weight_decay', 0.0)
+
+    if weight_decay > 0:
+        decay, no_decay = [], []
+        for param in model.parameters():
+            if param.requires_grad:
+                (decay if param.ndim > 1 else no_decay).append(param)
+        params = [
+            {'params': decay, 'weight_decay': weight_decay},
+            {'params': no_decay, 'weight_decay': 0.0},
+        ]
+    else:
+        # Single group: keeps checkpoints of earlier runs resumable
+        params = [p for p in model.parameters() if p.requires_grad]
 
     optimizer = optim.SGD(
-        model.parameters(),
+        params,
         lr=optimizer_cfg['lr'],
-        momentum=optimizer_cfg['momentum'],
-        weight_decay=optimizer_cfg['weight_decay'],
+        momentum=optimizer_cfg.get('momentum', 0.0),
+        nesterov=optimizer_cfg.get('nesterov', False),
     )
 
     return optimizer
 
 
 def build_lr_scheduler(config: dict, optimizer):
-    """Build step learning-rate scheduler (stepped every iteration)."""
+    """
+    Build the learning-rate scheduler (stepped every iteration).
+
+    lr_scheduler.type:
+        multistep (default): lr x gamma at each milestone
+        cosine: linear warmup, then cosine decay to min_lr at train.max_iter
+    """
     lr_cfg = config['lr_scheduler']
+    scheduler_type = lr_cfg.get('type', 'multistep')
 
-    scheduler = optim.lr_scheduler.MultiStepLR(
-        optimizer,
-        milestones=lr_cfg['milestones'],
-        gamma=lr_cfg['gamma'],
-    )
-
-    return scheduler
+    if scheduler_type == 'multistep':
+        return optim.lr_scheduler.MultiStepLR(
+            optimizer,
+            milestones=lr_cfg['milestones'],
+            gamma=lr_cfg['gamma'],
+        )
+    if scheduler_type == 'cosine':
+        return WarmupCosineLR(
+            optimizer,
+            max_iter=config['train']['max_iter'],
+            warmup=lr_cfg.get('warmup', 0),
+            warmup_factor=lr_cfg.get('warmup_factor', 0.1),
+            min_lr=lr_cfg.get('min_lr', 0.0),
+        )
+    raise ValueError(f"Unknown lr_scheduler.type: {scheduler_type!r}")
 
 
 def build_criterion(config: dict):
@@ -154,8 +188,14 @@ def main():
     # Build optimizer and lr scheduler
     optimizer = build_optimizer(config, model)
     lr_scheduler = build_lr_scheduler(config, optimizer)
-    log(f"  Initial LR: {optimizer.param_groups[0]['lr']:.6f}, "
-        f"milestones: {config['lr_scheduler']['milestones']}")
+    lr_cfg = config['lr_scheduler']
+    if lr_cfg.get('type', 'multistep') == 'cosine':
+        schedule = f"cosine, warmup {lr_cfg.get('warmup', 0)} iterations, min_lr {lr_cfg.get('min_lr', 0.0)}"
+    else:
+        schedule = f"multistep, milestones {lr_cfg['milestones']}"
+    opt_cfg = config['optimizer']
+    log(f"  Optimizer: SGD lr {opt_cfg['lr']}, momentum {opt_cfg.get('momentum', 0.0)}, "
+        f"weight decay {opt_cfg.get('weight_decay', 0.0)} | LR schedule: {schedule}")
 
     # Build criterion
     criterion = build_criterion(config).to(device)

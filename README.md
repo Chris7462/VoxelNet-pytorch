@@ -123,6 +123,17 @@ The schedule is iteration-based, so for a different number of GPUs rescale `max_
 CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 tools/train.py --config configs/voxelnet_kitti_car_2gpu_bs16.yaml
 ```
 
+`configs/voxelnet_kitti_car_2gpu_bs16_cosine.yaml` uses the same batch size and number of epochs with SGD momentum 0.9, lr 0.002, weight decay 1e-4 (conv / linear weights only) and a 2-epoch linear warmup followed by cosine decay.
+
+### Optimizer and Learning-Rate Schedule
+
+| Parameter | Description |
+|-----------|-------------|
+| `optimizer.lr` / `momentum` / `nesterov` | SGD settings (`momentum` and `nesterov` default to 0 / false) |
+| `optimizer.weight_decay` | Applied to conv / linear weights only, not to BatchNorm parameters and biases |
+| `lr_scheduler.type: multistep` | Default: `lr × gamma` at each iteration in `milestones` |
+| `lr_scheduler.type: cosine` | Linear warmup over `warmup` iterations (from `warmup_factor × lr`), then cosine decay to `min_lr` at `train.max_iter` |
+
 Training outputs (in `checkpoints/`, configurable):
 - `latest.pth` and `best.pth` (lowest validation loss)
 - `history.json` with train / validation losses at every checkpoint
@@ -206,7 +217,8 @@ Boxes are `[x, y, z, h, w, l, yaw]` in the LiDAR frame with `z` the bottom-cente
 ├── configs/
 │   ├── voxelnet_kitti_car.yaml       # KITTI Car, single GPU
 │   ├── voxelnet_kitti_car_3gpu.yaml  # KITTI Car, 3 GPUs (DDP)
-│   └── voxelnet_kitti_car_2gpu_bs16.yaml  # KITTI Car, paper batch size 16 on 2 GPUs (DDP)
+│   ├── voxelnet_kitti_car_2gpu_bs16.yaml  # KITTI Car, paper batch size 16 on 2 GPUs (DDP)
+│   └── voxelnet_kitti_car_2gpu_bs16_cosine.yaml  # Same, SGD momentum + weight decay + warmup / cosine LR
 ├── voxelnet_torch/             # Python package
 │   ├── datasets/
 │   │   ├── kitti.py            # KITTI dataset + collate
@@ -224,7 +236,8 @@ Boxes are `[x, y, z, h, w, l, yaw]` in the LiDAR frame with `z` the bottom-cente
 │   │   └── net/                # Full network
 │   ├── engine/
 │   │   ├── trainer.py          # Training loop (single GPU / DDP), validation, checkpoints
-│   │   └── evaluator.py        # Inference, KITTI-format predictions, AP
+│   │   ├── evaluator.py        # Inference, KITTI-format predictions, AP
+│   │   └── cosine_lr.py        # Warmup + cosine learning-rate scheduler
 │   └── utils/
 │       ├── anchors.py          # Anchor generation
 │       ├── box_ops.py          # Box conversions, IoU, encode / decode
