@@ -7,7 +7,8 @@ from torch.utils.data import Dataset
 from ..utils.anchors import build_anchors
 from ..utils.box_ops import boxes_to_corners_3d
 from .augmentation import Augmentor
-from .kitti_io import read_calib, read_label, read_lidar
+from .gt_sampler import GTSampler
+from .kitti_io import KITTI_CLASSES, read_calib, read_label, read_lidar
 from .target_assigner import TargetAssigner
 from .voxelizer import Voxelizer
 
@@ -71,7 +72,13 @@ class KITTI(Dataset):
         )
 
         aug_cfg = config.get('augmentation', {})
-        self.augmentor = Augmentor(aug_cfg) if training and aug_cfg.get('enabled', False) else None
+        aug_enabled = training and aug_cfg.get('enabled', False)
+        self.augmentor = Augmentor(aug_cfg) if aug_enabled else None
+
+        # GT sampling: paste objects from other training frames (applied before the other augmentations)
+        sampling_cfg = aug_cfg.get('gt_sampling', {})
+        self.gt_sampler = GTSampler(self.root, sampling_cfg) if aug_enabled and sampling_cfg.get('enabled', False) else None
+        self.other_classes = [c for c in KITTI_CLASSES if c not in self.classes]
 
         self._rng = None
         self._rng_seed = None
@@ -115,6 +122,10 @@ class KITTI(Dataset):
 
         if self.training:
             rng = self._get_rng()
+            if self.gt_sampler is not None:
+                label_file = os.path.join(self.label_dir, f'{frame_id}.txt')
+                other_boxes = read_label(label_file, calib, self.other_classes)
+                points, gt_boxes = self.gt_sampler(points, gt_boxes, other_boxes, rng)
             if self.augmentor is not None:
                 points, gt_boxes = self.augmentor(points, gt_boxes, rng)
 

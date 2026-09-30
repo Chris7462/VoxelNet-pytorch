@@ -259,3 +259,31 @@ def write_annotations(annos: dict, output_file: str) -> None:
                 f"{x1:.2f} {y1:.2f} {x2:.2f} {y2:.2f} {h:.4f} {w:.4f} {l:.4f} "
                 f"{x:.4f} {y:.4f} {z:.4f} {annos['rotation_y'][i]:.4f} {annos['score'][i]:.4f}\n"
             )
+
+
+KITTI_CLASSES = ('Car', 'Van', 'Truck', 'Pedestrian', 'Person_sitting', 'Cyclist', 'Tram', 'Misc')
+
+
+def annotations_difficulty(annos: dict) -> np.ndarray:
+    """
+    KITTI difficulty of every object: 0 easy, 1 moderate, 2 hard, -1 none of them
+    (2D box height / occlusion / truncation limits of the official benchmark).
+    """
+    height = annos['bbox'][:, 3] - annos['bbox'][:, 1]
+    occluded, truncated = annos['occluded'], annos['truncated']
+
+    difficulty = np.full(len(height), -1, dtype=np.int64)
+    for level, (min_height, max_occ, max_trunc) in reversed(list(enumerate([(40, 0, 0.15), (25, 1, 0.3), (25, 2, 0.5)]))):
+        ok = (height >= min_height) & (occluded <= max_occ) & (truncated <= max_trunc)
+        difficulty[ok] = level
+    return difficulty
+
+
+def annotations_to_lidar_boxes(annos: dict, calib: dict) -> np.ndarray:
+    """Convert label annotations (camera frame) to LiDAR boxes [x, y, z_bottom, h, w, l, yaw]."""
+    if len(annos['name']) == 0:
+        return np.zeros((0, 7))
+    h, w, l = annos['dimensions'].T
+    location = rect_to_velo(annos['location'], calib)
+    yaw = limit_period(-annos['rotation_y'] - np.pi / 2, offset=0.5, period=2 * np.pi)
+    return np.column_stack([location, h, w, l, yaw])
