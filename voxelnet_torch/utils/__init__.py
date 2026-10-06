@@ -27,6 +27,7 @@ from .logger import Logger
 from .metrics import Metrics
 from .postprocessing import decode_predictions, postprocess
 from .seed import set_seed
+from .visualization import draw_bev, draw_boxes_on_image, visualize_detections
 
 
 __all__ = [
@@ -58,4 +59,7 @@ __all__ = [
     "decode_predictions",
     "postprocess",
     "set_seed",
+    "draw_bev",
+    "draw_boxes_on_image",
+    "visualize_detections",
 ]

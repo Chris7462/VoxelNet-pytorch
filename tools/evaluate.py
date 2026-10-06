@@ -7,6 +7,9 @@ Runs inference with a checkpoint, writes KITTI-format predictions and computes t
 
 Evaluate existing prediction files only (no model needed):
     python tools/evaluate.py --config configs/voxelnet_kitti_car.yaml --pred_dir outputs/eval/predictions
+
+Add --visualize to also save pictures (camera image + bird's-eye view, ground truth and predictions)
+of the first --num_visualize frames.
 """
 
 import argparse
@@ -17,7 +20,7 @@ from torch.utils.data import DataLoader
 
 from voxelnet_torch.datasets import KITTI
 from voxelnet_torch.engine import Evaluator
-from voxelnet_torch.engine.evaluator import evaluate_predictions
+from voxelnet_torch.engine.evaluator import evaluate_predictions, visualize_predictions
 from voxelnet_torch.model import VoxelNet
 from voxelnet_torch.utils import compute_grid_size, load_config
 
@@ -40,6 +43,12 @@ def parse_args():
                         help='Override evaluation.nms_iou_threshold')
     parser.add_argument('--score_threshold', type=float, default=None,
                         help='Override evaluation.score_threshold')
+    parser.add_argument('--visualize', action='store_true',
+                        help='Save visualization images')
+    parser.add_argument('--num_visualize', type=int, default=20,
+                        help='Number of frames to visualize (default: 20)')
+    parser.add_argument('--vis_score_threshold', type=float, default=None,
+                        help='Minimum score of a drawn prediction (default: postprocess.score_threshold)')
     args = parser.parse_args()
     if (args.checkpoint is None) == (args.pred_dir is None):
         parser.error('Pass exactly one of --checkpoint or --pred_dir')
@@ -78,6 +87,9 @@ def main():
             frame_ids = [line.strip() for line in f if line.strip()]
         evaluate_predictions(args.pred_dir, os.path.join(root, 'training', 'label_2'),
                              frame_ids, classes, output_dir)
+        if args.visualize:
+            visualize_predictions(config, args.pred_dir, frame_ids, os.path.join(output_dir, 'visualizations'),
+                                  args.num_visualize, args.vis_score_threshold)
         return
 
     device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
@@ -106,6 +118,8 @@ def main():
     evaluator = Evaluator(model, data_loader, config, device, output_dir)
     frame_ids = evaluator.predict()
     evaluator.evaluate(frame_ids, classes)
+    if args.visualize:
+        evaluator.visualize(frame_ids, args.num_visualize, args.vis_score_threshold)
 
 
 if __name__ == '__main__':

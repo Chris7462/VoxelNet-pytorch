@@ -23,7 +23,7 @@ The original version of this repo (PyTorch 0.3, Python 3.5, custom C/CUDA extens
 | **Training** | Fixed 10k iterations, no checkpoints, image dump every iteration | Iteration-based trainer with validation, checkpoints, resume, bfloat16 AMP, multi-GPU (DDP) |
 | **Config** | Python class | YAML |
 
-Visualization (mayavi / image overlays) is not included yet.
+Visualization is done with OpenCV (camera image with projected 3D boxes + bird's-eye view, see [Visualization](#visualization)); the mayavi 3D viewer of the original code is not included.
 
 ## Installation
 
@@ -203,7 +203,28 @@ Detections are kept above `evaluation.score_threshold` (0.1) and filtered with N
 ```bash
 python tools/evaluate.py --config configs/voxelnet_kitti_car.yaml --checkpoint checkpoints/latest.pth \
     --nms_type rotated --nms_iou_threshold 0.1 --output_dir outputs/eval_rotated
-``` The model does not predict the heading direction (yaw is learned modulo π), so AOS is not reported.
+```
+
+The model does not predict the heading direction (yaw is learned modulo π), so AOS is not reported.
+
+## Visualization
+
+Add `--visualize` to the evaluation to save pictures of the first frames of the split (20 by default):
+```bash
+python tools/evaluate.py --config configs/voxelnet_kitti_car.yaml --checkpoint checkpoints/latest.pth --visualize
+```
+
+It also works on existing prediction files, without running the model:
+```bash
+python tools/evaluate.py --config configs/voxelnet_kitti_car.yaml --pred_dir outputs/eval/predictions \
+    --visualize --num_visualize 100
+```
+
+Each picture (`outputs/eval/visualizations/<frame>.png`) shows the camera image with the 3D boxes projected into it on top, and the bird's-eye view of the point cloud below (driving direction up, brighter points are higher). Ground truth (`dataset.classes`) is green, predictions are red with their score; the cross on a box in the camera image and the line from the center in the bird's-eye view mark its front.
+
+Only predictions with a score above `postprocess.score_threshold` (0.5) are drawn, since the evaluation keeps detections down to a score of 0.1. Change it with `--vis_score_threshold`.
+
+The drawing functions are in `voxelnet_torch/utils/visualization.py` (`draw_bev`, `draw_boxes_on_image`, `visualize_detections`) and can be used on their own, e.g. to check the dataset or the augmentation.
 
 ## Model Architecture
 
@@ -265,13 +286,14 @@ Boxes are `[x, y, z, h, w, l, yaw]` in the LiDAR frame with `z` the bottom-cente
 │   │   └── net/                # Full network
 │   ├── engine/
 │   │   ├── trainer.py          # Training loop (single GPU / DDP), validation, checkpoints
-│   │   ├── evaluator.py        # Inference, KITTI-format predictions, AP
+│   │   ├── evaluator.py        # Inference, KITTI-format predictions, AP, visualization
 │   │   └── cosine_lr.py        # Warmup + cosine learning-rate scheduler
 │   └── utils/
 │       ├── anchors.py          # Anchor generation
 │       ├── box_ops.py          # Box conversions, IoU, encode / decode
 │       ├── kitti_eval.py       # KITTI AP (2D / BEV / 3D, R11 / R40)
 │       ├── postprocessing.py   # Decoding + NMS
+│       ├── visualization.py    # BEV and camera-image drawing of boxes
 │       ├── config.py           # Config loading, grid size
 │       ├── data.py             # Infinite loader
 │       ├── distributed.py      # DDP setup and helpers
@@ -289,7 +311,7 @@ Boxes are `[x, y, z, h, w, l, yaw]` in the LiDAR frame with `z` the bottom-cente
 ## TODO
 - [x] Port to PyTorch 2.x
 - [x] Fix IoU, calibration, anchor, and architecture issues
-- [ ] Visualization (BEV, image projection)
+- [x] Visualization (BEV, image projection)
 - [x] KITTI evaluation (2D / BEV / 3D AP)
 - [ ] Reproduce results for `Car`, `Pedestrian` and `Cyclist`
 

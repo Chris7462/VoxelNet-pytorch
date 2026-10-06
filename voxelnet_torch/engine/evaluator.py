@@ -2,18 +2,22 @@ import json
 import os
 from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
 import torch.nn as nn
 
 from ..datasets.kitti_io import (
+    annotations_to_lidar_boxes,
     lidar_boxes_to_annotations,
     read_calib,
     read_image_shape,
+    read_label,
     read_label_annotations,
+    read_lidar,
     write_annotations,
 )
-from ..utils import build_anchors, postprocess
+from ..utils import build_anchors, postprocess, visualize_detections
 from ..utils.kitti_eval import evaluate, format_results
 
 
@@ -123,6 +127,26 @@ class Evaluator:
         """
         return evaluate_predictions(self.pred_dir, self.label_dir, frame_ids, classes, self.output_dir)
 
+    def visualize(
+        self,
+        frame_ids: list[str],
+        num_visualize: int | None = 20,
+        score_threshold: float | None = None,
+    ) -> Path:
+        """
+        Save pictures of the written predictions (see `visualize_predictions`).
+
+        Args:
+            frame_ids: Frames to draw
+            num_visualize: Draw only the first N frames (None: all)
+            score_threshold: Minimum score of a drawn prediction (default: postprocess.score_threshold)
+
+        Returns:
+            Directory with the pictures
+        """
+        return visualize_predictions(self.config, self.pred_dir, frame_ids, self.output_dir / 'visualizations',
+                                     num_visualize, score_threshold)
+
 
 def evaluate_predictions(
     pred_dir: str | Path,
@@ -163,3 +187,67 @@ def evaluate_predictions(
         print(f"\nResults saved to: {output_dir / 'results.txt'}")
 
     return results
+
+
+def visualize_predictions(
+    config: dict,
+    pred_dir: str | Path,
+    frame_ids: list[str],
+    output_dir: str | Path,
+    num_visualize: int | None = 20,
+    score_threshold: float | None = None,
+) -> Path:
+    """
+    Draw KITTI-format prediction files next to the ground truth, one `<frame>.png` per frame:
+    the camera image with the projected 3D boxes on top, the bird's-eye view of the point cloud below.
+    Ground truth (the training classes) is green, predictions are red with their score.
+
+    Frames without a prediction file are drawn without predictions; frames without
+    a camera image are drawn as bird's-eye view only.
+
+    Args:
+        config: Configuration dictionary
+        pred_dir: Directory with the prediction files
+        frame_ids: Frames to draw
+        output_dir: Directory for the pictures
+        num_visualize: Draw only the first N frames (None: all)
+        score_threshold: Minimum score of a drawn prediction (default: postprocess.score_threshold)
+
+    Returns:
+        `output_dir`
+    """
+    data_cfg = config['dataset']
+    data_dir = os.path.join(data_cfg['root'], 'training')
+    lidar_dir = os.path.join(data_dir, data_cfg.get('lidar_dir', 'crop'))
+    if score_threshold is None:
+        score_threshold = config['postprocess']['score_threshold']
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    frame_ids = frame_ids if num_visualize is None else frame_ids[:num_visualize]
+    print(f"Visualizing {len(frame_ids)} frames (predictions with score > {score_threshold})...")
+
+    for frame_id in frame_ids:
+        calib = read_calib(os.path.join(data_dir, 'calib', f'{frame_id}.txt'))
+        points = read_lidar(os.path.join(lidar_dir, f'{frame_id}.bin'))
+        image = cv2.imread(os.path.join(data_dir, 'image_2', f'{frame_id}.png'))      # None if missing
+        gt_boxes = read_label(os.path.join(data_dir, 'label_2', f'{frame_id}.txt'), calib, data_cfg['classes'])
+
+        pred_boxes, scores = np.zeros((0, 7)), np.zeros(0)
+        pred_file = os.path.join(pred_dir, f'{frame_id}.txt')
+        if os.path.exists(pred_file):
+            annos = read_label_annotations(pred_file)
+            pred_boxes = annotations_to_lidar_boxes(annos, calib)
+            scores = annos.get('score', np.ones(len(pred_boxes)))
+            keep = scores > score_threshold
+            pred_boxes, scores = pred_boxes[keep], scores[keep]
+
+        picture = visualize_detections(
+            points, data_cfg['point_cloud_range'], gt_boxes, pred_boxes, scores,
+            image=image, calib=calib, title=frame_id,
+        )
+        cv2.imwrite(str(output_dir / f'{frame_id}.png'), picture)
+
+    print(f"Visualizations saved to: {output_dir}")
+    return output_dir
