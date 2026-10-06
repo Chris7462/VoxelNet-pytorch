@@ -12,10 +12,10 @@ from voxelnet_torch.datasets.kitti_io import lidar_boxes_to_annotations, read_ca
 from voxelnet_torch.engine.evaluator import visualize_predictions
 from voxelnet_torch.utils import draw_bev, draw_boxes_on_image, visualize_detections
 from voxelnet_torch.utils.visualization import (
-    BOX_EDGES, GT_COLOR, PRED_COLOR, bev_pixels, project_boxes_to_image,
+    BOX_EDGES, DONTCARE_COLOR, GT_COLOR, OTHER_COLOR, PRED_COLOR, bev_pixels, project_boxes_to_image,
 )
 
-from conftest import CALIB_TEXT, REPO_ROOT, small_config
+from conftest import CALIB_TEXT, REPO_ROOT, box_to_label_line, small_config
 from test_evaluator import IMAGE_SHAPE, eval_root  # noqa: F401  (fixture)
 
 RANGE = [0.0, -12.8, -3.0, 25.6, 12.8, 1.0]
@@ -124,6 +124,16 @@ def test_visualize_detections(tmp_path):
     for part in (picture[:IMAGE_SHAPE[0]], picture[IMAGE_SHAPE[0]:]):
         assert color_mask(part, GT_COLOR).any() and color_mask(part, PRED_COLOR).any()
 
+    # Other classes (yellow, in both views) and DontCare regions (cyan, camera image only)
+    other = np.array([[20.0, -5.0, -1.7, 3.0, 2.5, 8.0, 0.0]])
+    picture = visualize_detections(points, RANGE, gt, gt + 0.2, np.array([0.7]), image=camera, calib=calib,
+                                   other_boxes=other, other_labels=['Truck'],
+                                   dontcare_bboxes=np.array([[900.0, 100.0, 1000.0, 150.0]]))
+    top, bottom = picture[:IMAGE_SHAPE[0]], picture[IMAGE_SHAPE[0]:]
+    assert color_mask(top, OTHER_COLOR).sum() > 200 and color_mask(bottom[:, 150:], OTHER_COLOR).sum() > 100
+    cyan = color_mask(top, DONTCARE_COLOR)
+    assert cyan[100, 950] and cyan[125, 900] and not cyan[125, 950] and not color_mask(bottom, DONTCARE_COLOR).any()
+
     # No camera image: bird's-eye view only; no boxes at all is fine too
     assert visualize_detections(points, RANGE, gt, None).shape == (256, 256, 3)
     assert visualize_detections(points, RANGE).shape == (256, 256, 3)
@@ -140,7 +150,11 @@ def write_predictions(root: str, pred_dir, score: float) -> None:
 
 def test_visualize_predictions(eval_root, tmp_path):  # noqa: F811
     config = small_config(eval_root)
-    write_predictions(eval_root, tmp_path / 'preds', 0.9)
+    write_predictions(eval_root, tmp_path / 'preds', 0.97)                # before the extra labels below
+    calib = read_calib(os.path.join(eval_root, 'training', 'calib', '000000.txt'))
+    with open(os.path.join(eval_root, 'training', 'label_2', '000000.txt'), 'a') as f:
+        f.write(box_to_label_line(np.array([20.0, 9.0, -1.7, 3.0, 2.5, 8.0, 0.0]), calib, 'Truck') + '\n')
+        f.write('DontCare -1 -1 -10 900.00 100.00 1000.00 150.00 -1 -1 -1 -1000 -1000 -1000 -10\n')
     os.remove(tmp_path / 'preds' / '000001.txt')                          # frame without predictions
     os.remove(os.path.join(eval_root, 'training', 'image_2', '000002.png'))   # frame without camera image
     frame_ids = [f'{i:06d}' for i in range(12)]
@@ -155,16 +169,28 @@ def test_visualize_predictions(eval_root, tmp_path):  # noqa: F811
     assert color_mask(with_pred, PRED_COLOR).sum() > color_mask(without_pred, PRED_COLOR).sum() + 500
     assert color_mask(without_pred, GT_COLOR).sum() > 500
 
-    # Predictions below the score threshold are not drawn; num_visualize=None draws every frame
-    out = visualize_predictions(config, tmp_path / 'preds', frame_ids, tmp_path / 'vis_high', None, score_threshold=0.95)
-    assert len(os.listdir(out)) == 12
-    hidden = cv2.imread(str(out / '000000.png'))
-    assert color_mask(hidden, PRED_COLOR).sum() < color_mask(with_pred, PRED_COLOR).sum() - 500
+    # Frame 000000 has a Truck (yellow) and a DontCare region (cyan); the other frames have neither
+    assert color_mask(with_pred, OTHER_COLOR).sum() > 300 and color_mask(with_pred, DONTCARE_COLOR)[100, 950]
+    legend = np.zeros_like(color_mask(without_pred, OTHER_COLOR))
+    legend[:120, :160] = True
+    assert not (color_mask(without_pred, OTHER_COLOR) & ~legend).any()
+    assert not (color_mask(without_pred, DONTCARE_COLOR) & ~legend).any()
+
+    # Predictions below the score threshold are not drawn; num_visualize=None draws every frame.
+    # The default threshold is evaluation.vis_score_threshold (0.95 in the shipped configs).
+    assert config['evaluation']['vis_score_threshold'] == 0.95
+    for kwargs in ({'score_threshold': 0.98}, {}):
+        if not kwargs:
+            config['evaluation']['vis_score_threshold'] = 0.98
+        out = visualize_predictions(config, tmp_path / 'preds', frame_ids, tmp_path / f'vis_{len(kwargs)}', None, **kwargs)
+        assert len(os.listdir(out)) == 12
+        hidden = cv2.imread(str(out / '000000.png'))
+        assert color_mask(hidden, PRED_COLOR).sum() < color_mask(with_pred, PRED_COLOR).sum() - 500
 
 
 def test_evaluate_script_visualize(eval_root, tmp_path):  # noqa: F811
     config = small_config(eval_root)
-    write_predictions(eval_root, tmp_path / 'preds', 0.9)
+    write_predictions(eval_root, tmp_path / 'preds', 0.97)
     config_path = tmp_path / 'cfg.yaml'
     config_path.write_text(yaml.safe_dump(config))
 

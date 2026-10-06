@@ -14,6 +14,8 @@ from .box_ops import boxes_to_bev_corners, boxes_to_corners_3d
 # BGR
 GT_COLOR = (0, 255, 0)        # Ground truth: green
 PRED_COLOR = (0, 0, 255)      # Predictions: red
+OTHER_COLOR = (0, 215, 255)   # Labeled objects of other classes: yellow
+DONTCARE_COLOR = (255, 255, 0)  # DontCare regions (camera image only): cyan
 
 # Corner indices (see `boxes_to_corners_3d`): 0-3 bottom, 4-7 top; 2, 3, 6, 7 are the front (+l/2) face
 BOX_EDGES = (
@@ -37,6 +39,14 @@ def _put_text(image: np.ndarray, text: str, org: tuple[int, int], color: tuple, 
     """Text with a dark outline so it stays readable on any background."""
     cv2.putText(image, text, org, FONT, scale, (0, 0, 0), 3, cv2.LINE_AA)
     cv2.putText(image, text, org, FONT, scale, color, 1, cv2.LINE_AA)
+
+
+def _box_texts(scores, labels) -> list[str] | None:
+    if labels is not None:
+        return [str(label) for label in labels]
+    if scores is not None:
+        return [f'{score:.2f}' for score in scores]
+    return None
 
 
 def bev_pixels(xy: np.ndarray, point_cloud_range, resolution: float) -> np.ndarray:
@@ -68,11 +78,16 @@ def draw_bev_boxes(
     color: tuple,
     scores: np.ndarray | None = None,
     thickness: int = 2,
+    labels: list[str] | None = None,
 ) -> np.ndarray:
-    """Draw box footprints (with a line from the center to the front) on a bird's-eye-view image, in place."""
+    """
+    Draw box footprints (with a line from the center to the front) on a bird's-eye-view image, in place.
+    `scores` or `labels` (one text per box) are written next to the boxes.
+    """
     boxes = _as_boxes(boxes)
     if len(boxes) == 0:
         return image
+    texts = _box_texts(scores, labels)
 
     corners = bev_pixels(boxes_to_bev_corners(boxes), point_cloud_range, resolution)      # (N, 4, 2)
     centers = corners.mean(axis=1)
@@ -82,9 +97,9 @@ def draw_bev_boxes(
         cv2.polylines(image, [np.round(corners[i]).astype(np.int32)], True, color, thickness, cv2.LINE_AA)
         cv2.line(image, tuple(np.round(centers[i]).astype(int).tolist()),
                  tuple(np.round(fronts[i]).astype(int).tolist()), color, thickness, cv2.LINE_AA)
-        if scores is not None:
+        if texts is not None:
             u, v = corners[i, :, 0].max() + 3, corners[i, :, 1].min() + 10
-            _put_text(image, f'{scores[i]:.2f}', (int(u), int(v)), color)
+            _put_text(image, texts[i], (int(u), int(v)), color)
     return image
 
 
@@ -95,9 +110,12 @@ def draw_bev(
     pred_boxes: np.ndarray | None = None,
     scores: np.ndarray | None = None,
     resolution: float = 0.1,
+    other_boxes: np.ndarray | None = None,
+    other_labels: list[str] | None = None,
 ) -> np.ndarray:
     """
-    Bird's-eye view of a point cloud with ground-truth (green) and predicted (red) boxes.
+    Bird's-eye view of a point cloud with ground-truth (green) and predicted (red) boxes,
+    and optionally the labeled objects of other classes (yellow, thin).
 
     Points are drawn brighter the higher they are.
 
@@ -108,6 +126,8 @@ def draw_bev(
         pred_boxes: (M, 7) predicted boxes
         scores: (M,) prediction scores, written next to the predicted boxes
         resolution: Meters per pixel
+        other_boxes: (K, 7) labeled objects that are not ground truth for the detector
+        other_labels: K texts (class names) written next to `other_boxes`
 
     Returns:
         (H, W, 3) BGR image, H = x extent / resolution, W = y extent / resolution
@@ -128,6 +148,7 @@ def draw_bev(
         np.maximum.at(gray, (uv[:, 1], uv[:, 0]), brightness)
         image[:] = gray[..., None].astype(np.uint8)
 
+    draw_bev_boxes(image, other_boxes, point_cloud_range, resolution, OTHER_COLOR, thickness=1, labels=other_labels)
     draw_bev_boxes(image, gt_boxes, point_cloud_range, resolution, GT_COLOR)
     draw_bev_boxes(image, pred_boxes, point_cloud_range, resolution, PRED_COLOR, scores)
     return image
@@ -176,6 +197,7 @@ def draw_boxes_on_image(
     color: tuple,
     scores: np.ndarray | None = None,
     thickness: int = 2,
+    labels: list[str] | None = None,
 ) -> np.ndarray:
     """
     Draw 3D boxes as wireframes on the camera image, in place. The front face is marked with a cross.
@@ -187,11 +209,13 @@ def draw_boxes_on_image(
         color: BGR color
         scores: (N,) scores, written above the boxes
         thickness: Line thickness
+        labels: N texts written above the boxes instead of the scores
 
     Returns:
         The image
     """
     height, width = image.shape[:2]
+    texts = _box_texts(scores, labels)
     limit = 1e6     # keeps the integer conversion safe for points projected very far away
 
     for i, segments in enumerate(project_boxes_to_image(boxes, calib)):
@@ -203,10 +227,10 @@ def draw_boxes_on_image(
             if inside:
                 cv2.line(image, p1, p2, color, thickness, cv2.LINE_AA)
                 visible += [p1, p2]
-        if scores is not None and visible:
+        if texts is not None and visible:
             visible = np.array(visible)
             u, v = visible[:, 0].min(), max(visible[:, 1].min() - 4, 12)
-            _put_text(image, f'{scores[i]:.2f}', (int(u), int(v)), color)
+            _put_text(image, texts[i], (int(u), int(v)), color)
     return image
 
 
@@ -220,10 +244,17 @@ def visualize_detections(
     calib: dict | None = None,
     title: str | None = None,
     resolution: float = 0.1,
+    other_boxes: np.ndarray | None = None,
+    other_labels: list[str] | None = None,
+    dontcare_bboxes: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     One picture per frame: the camera image with the projected 3D boxes on top,
     the bird's-eye view of the point cloud below. Ground truth is green, predictions are red.
+
+    Labeled objects that are not ground truth for the detector (other classes) can be added in
+    yellow with their class name, and DontCare regions as cyan rectangles in the camera image,
+    so that a red box without any other box around it is a detection of something unlabeled.
 
     Args:
         points: (P, 3+) LiDAR points
@@ -235,16 +266,23 @@ def visualize_detections(
         calib: Calibration dict from `read_calib`
         title: Text written in the top-left corner (e.g. the frame id)
         resolution: Bird's-eye-view meters per pixel
+        other_boxes: (K, 7) labeled objects of other classes
+        other_labels: K class names of `other_boxes`
+        dontcare_bboxes: (D, 4) DontCare regions [x1, y1, x2, y2] in the camera image
 
     Returns:
         (H', W', 3) BGR image
     """
-    bev = draw_bev(points, point_cloud_range, gt_boxes, pred_boxes, scores, resolution)
+    bev = draw_bev(points, point_cloud_range, gt_boxes, pred_boxes, scores, resolution, other_boxes, other_labels)
+    dontcare = np.zeros((0, 4)) if dontcare_bboxes is None else np.asarray(dontcare_bboxes).reshape(-1, 4)
 
     if image is None or calib is None:
         canvas = bev
     else:
         camera = np.ascontiguousarray(image[..., :3]).copy()
+        for x1, y1, x2, y2 in np.round(dontcare).astype(int).tolist():
+            cv2.rectangle(camera, (x1, y1), (x2, y2), DONTCARE_COLOR, 1, cv2.LINE_AA)
+        draw_boxes_on_image(camera, other_boxes, calib, OTHER_COLOR, thickness=1, labels=other_labels)
         draw_boxes_on_image(camera, gt_boxes, calib, GT_COLOR)
         draw_boxes_on_image(camera, pred_boxes, calib, PRED_COLOR, scores)
 
@@ -263,4 +301,10 @@ def visualize_detections(
         y += 20
     _put_text(canvas, f'GT: {num_gt}', (8, y), GT_COLOR, scale=0.55)
     _put_text(canvas, f'Pred: {num_pred}', (8, y + 20), PRED_COLOR, scale=0.55)
+    y += 40
+    if other_boxes is not None:
+        _put_text(canvas, f'Other: {len(_as_boxes(other_boxes))}', (8, y), OTHER_COLOR, scale=0.55)
+        y += 20
+    if dontcare_bboxes is not None and image is not None and calib is not None:
+        _put_text(canvas, f'DontCare: {len(dontcare)}', (8, y), DONTCARE_COLOR, scale=0.55)
     return canvas

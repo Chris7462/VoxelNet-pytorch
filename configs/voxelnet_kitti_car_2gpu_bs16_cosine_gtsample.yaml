@@ -94,6 +94,7 @@ evaluation:
   score_threshold: 0.1          # low threshold: AP integrates over all score levels
   nms_iou_threshold: 0.1
   max_detections: 100
+  vis_score_threshold: 0.95     # --visualize: minimum score of a drawn prediction
   output_dir: outputs/eval
 
 # Checkpoints (save checkpoint with validation every N iterations)

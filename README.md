@@ -220,9 +220,18 @@ python tools/evaluate.py --config configs/voxelnet_kitti_car.yaml --pred_dir out
     --visualize --num_visualize 100
 ```
 
-Each picture (`outputs/eval/visualizations/<frame>.png`) shows the camera image with the 3D boxes projected into it on top, and the bird's-eye view of the point cloud below (driving direction up, brighter points are higher). Ground truth (`dataset.classes`) is green, predictions are red with their score; the cross on a box in the camera image and the line from the center in the bird's-eye view mark its front.
+Each picture (`outputs/eval/visualizations/<frame>.png`) shows the camera image with the 3D boxes projected into it on top, and the bird's-eye view of the point cloud below (driving direction up, brighter points are higher). The cross on a box in the camera image and the line from the center in the bird's-eye view mark its front.
 
-Only predictions with a score above `postprocess.score_threshold` (0.5) are drawn, since the evaluation keeps detections down to a score of 0.1. Change it with `--vis_score_threshold`.
+| Color | Meaning |
+|-------|---------|
+| Green | Ground truth of the trained classes (`dataset.classes`) |
+| Red | Predictions, with their score |
+| Yellow (thin) | Labeled objects of other classes (Truck, Cyclist, ...), with the class name |
+| Cyan rectangle | DontCare regions (camera image only: they have no 3D box) |
+
+A red box with no other box around it is therefore a detection of something that is not labeled. Detections on other classes count as false positives in the KITTI evaluation, detections inside DontCare regions do not.
+
+Only predictions with a score above `evaluation.vis_score_threshold` (0.95) are drawn; change it with `--vis_score_threshold`. The threshold is high because the scores of this model saturate: true cars mostly score close to 1.0, while many false alarms score between 0.5 and 0.95. AP is not affected by this (it only depends on the ranking), but a picture drawn at 0.5 is cluttered.
 
 The drawing functions are in `voxelnet_torch/utils/visualization.py` (`draw_bev`, `draw_boxes_on_image`, `visualize_detections`) and can be used on their own, e.g. to check the dataset or the augmentation.
 

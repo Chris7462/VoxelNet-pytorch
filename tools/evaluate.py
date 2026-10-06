@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument('--num_visualize', type=int, default=20,
                         help='Number of frames to visualize (default: 20)')
     parser.add_argument('--vis_score_threshold', type=float, default=None,
-                        help='Minimum score of a drawn prediction (default: postprocess.score_threshold)')
+                        help='Minimum score of a drawn prediction (default: evaluation.vis_score_threshold)')
     args = parser.parse_args()
     if (args.checkpoint is None) == (args.pred_dir is None):
         parser.error('Pass exactly one of --checkpoint or --pred_dir')

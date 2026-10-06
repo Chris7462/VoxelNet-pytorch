@@ -8,11 +8,11 @@ import torch
 import torch.nn as nn
 
 from ..datasets.kitti_io import (
+    KITTI_CLASSES,
     annotations_to_lidar_boxes,
     lidar_boxes_to_annotations,
     read_calib,
     read_image_shape,
-    read_label,
     read_label_annotations,
     read_lidar,
     write_annotations,
@@ -139,7 +139,7 @@ class Evaluator:
         Args:
             frame_ids: Frames to draw
             num_visualize: Draw only the first N frames (None: all)
-            score_threshold: Minimum score of a drawn prediction (default: postprocess.score_threshold)
+            score_threshold: Minimum score of a drawn prediction (default: evaluation.vis_score_threshold, 0.95)
 
         Returns:
             Directory with the pictures
@@ -201,6 +201,11 @@ def visualize_predictions(
     Draw KITTI-format prediction files next to the ground truth, one `<frame>.png` per frame:
     the camera image with the projected 3D boxes on top, the bird's-eye view of the point cloud below.
     Ground truth (the training classes) is green, predictions are red with their score.
+    Labeled objects of the other classes are yellow with their class name, and DontCare
+    regions are cyan rectangles in the camera image.
+
+    The default score threshold is high because the scores of this model saturate:
+    true cars mostly score close to 1, and many false alarms score between 0.5 and 0.95.
 
     Frames without a prediction file are drawn without predictions; frames without
     a camera image are drawn as bird's-eye view only.
@@ -211,7 +216,7 @@ def visualize_predictions(
         frame_ids: Frames to draw
         output_dir: Directory for the pictures
         num_visualize: Draw only the first N frames (None: all)
-        score_threshold: Minimum score of a drawn prediction (default: postprocess.score_threshold)
+        score_threshold: Minimum score of a drawn prediction (default: evaluation.vis_score_threshold, 0.95)
 
     Returns:
         `output_dir`
@@ -220,7 +225,8 @@ def visualize_predictions(
     data_dir = os.path.join(data_cfg['root'], 'training')
     lidar_dir = os.path.join(data_dir, data_cfg.get('lidar_dir', 'crop'))
     if score_threshold is None:
-        score_threshold = config['postprocess']['score_threshold']
+        score_threshold = config.get('evaluation', {}).get('vis_score_threshold', 0.95)
+    classes = list(data_cfg['classes'])
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -232,7 +238,12 @@ def visualize_predictions(
         calib = read_calib(os.path.join(data_dir, 'calib', f'{frame_id}.txt'))
         points = read_lidar(os.path.join(lidar_dir, f'{frame_id}.bin'))
         image = cv2.imread(os.path.join(data_dir, 'image_2', f'{frame_id}.png'))      # None if missing
-        gt_boxes = read_label(os.path.join(data_dir, 'label_2', f'{frame_id}.txt'), calib, data_cfg['classes'])
+
+        labels = read_label_annotations(os.path.join(data_dir, 'label_2', f'{frame_id}.txt'))
+        is_gt = np.isin(labels['name'], classes)
+        is_other = np.isin(labels['name'], KITTI_CLASSES) & ~is_gt
+        gt_boxes = annotations_to_lidar_boxes({k: v[is_gt] for k, v in labels.items()}, calib)
+        other_boxes = annotations_to_lidar_boxes({k: v[is_other] for k, v in labels.items()}, calib)
 
         pred_boxes, scores = np.zeros((0, 7)), np.zeros(0)
         pred_file = os.path.join(pred_dir, f'{frame_id}.txt')
@@ -246,6 +257,8 @@ def visualize_predictions(
         picture = visualize_detections(
             points, data_cfg['point_cloud_range'], gt_boxes, pred_boxes, scores,
             image=image, calib=calib, title=frame_id,
+            other_boxes=other_boxes, other_labels=labels['name'][is_other].tolist(),
+            dontcare_bboxes=labels['bbox'][labels['name'] == 'DontCare'],
         )
         cv2.imwrite(str(output_dir / f'{frame_id}.png'), picture)
 
